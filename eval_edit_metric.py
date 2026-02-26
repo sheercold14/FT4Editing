@@ -6,6 +6,7 @@ from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 import regex
 import string
+from typing import Optional
 
 
 def print_time(process_name):
@@ -38,6 +39,9 @@ def run_evaluation():
     parser.add_argument('--model_path', required=True, type=str, help="The Path for edited LLMs")
     parser.add_argument('--tp_size', type=int, default=1, help="Tensor parallelism size")
     parser.add_argument('--num_samples', type=int, default=100)
+    parser.add_argument('--seed', type=int, default=0, help="Seed for subsampling (when num_samples < dataset size)")
+    parser.add_argument('--quiet', action='store_true', help="Disable per-example printing")
+    parser.add_argument('--output_path', type=str, default=None, help="Optional path to save a JSON summary")
     args = parser.parse_args()
 
     # 1. Load Data for Editing
@@ -45,6 +49,7 @@ def run_evaluation():
         source_data = json.load(f)
     
     if len(source_data) > args.num_samples:
+        random.seed(args.seed)
         data = random.sample(source_data, args.num_samples)
     else:
         data = source_data
@@ -105,21 +110,36 @@ def run_evaluation():
         src_em_list.append(src_em)
         rephrase_em_list.append(rephrase_em)
 
-        print(f"Example {i+1}:")
-        print(f"Rewrite Output: {pred_src}")
-        print(f"Rephrase Output: {pred_rephrase}")
-        print(f"Target: {target}")
-        print(f"Source Exact Match: {src_em:.4f}")
-        print(f"Rephrase Exact Match: {rephrase_em:.4f}")
-        print("-" * 50)
+        if not args.quiet:
+            print(f"Example {i+1}:")
+            print(f"Rewrite Output: {pred_src}")
+            print(f"Rephrase Output: {pred_rephrase}")
+            print(f"Target: {target}")
+            print(f"Source Exact Match: {src_em:.4f}")
+            print(f"Rephrase Exact Match: {rephrase_em:.4f}")
+            print("-" * 50)
 
     # 6. Summary Output
     print("\n" + "="*30)
     print(f"Evaluation Results for: {args.model_path}")
-    print(f"Reliability (Src) EM: {sum(src_em_list)/len(src_em_list):.4f}")
-    print(f"Generalization (Rephrase) EM: {sum(rephrase_em_list)/len(rephrase_em_list):.4f}")
+    reliability = sum(src_em_list) / len(src_em_list) if src_em_list else 0.0
+    generalization = sum(rephrase_em_list) / len(rephrase_em_list) if rephrase_em_list else 0.0
+    print(f"Reliability (Src) EM: {reliability:.4f}")
+    print(f"Generalization (Rephrase) EM: {generalization:.4f}")
     print("="*30)
     
+    if args.output_path:
+        payload = {
+            "data_path": args.data_path,
+            "model_path": args.model_path,
+            "num_samples": len(data),
+            "seed": args.seed,
+            "reliability_src_em": reliability,
+            "generalization_rephrase_em": generalization,
+        }
+        with open(args.output_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
     print_time("Evaluation Finished")
 
 if __name__ == "__main__":

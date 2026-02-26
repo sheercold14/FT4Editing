@@ -55,6 +55,49 @@ Metrics printed by the runner (off-policy eval `num_samples=500`, on-policy eval
 | long_e3_mix_dpo | 0.0540 | 0.0800 | 0.0000 | 0.0000 | 0.9338 | 0.9338 |
 | long_e5_dynamic_gate | 0.0520 | 0.0780 | 0.0000 | 0.0000 | 0.9288 | 0.9288 |
 
+## Baseline reproduction + full-scale (3k) DBKE results
+We aligned our “Edit Success” reporting with the **repo’s official evaluation script** `eval_edit_metric.py` (vLLM greedy EM with normalization), which reports:
+- **Reliability (Src) EM** on `src` prompts
+- **Generalization (Rephrase) EM** on `rephrase` prompts
+
+### Repo baseline (paper script)
+Fine-tune command (repo):
+- `python fine-tune.py --config_path ./hparams/qwen3-1.7b_zsre3k_baseline.yaml`
+
+Eval command (repo):
+- `CUDA_VISIBLE_DEVICES=0 python eval_edit_metric.py --data_path ./data/zsre/zsre_3k.json --model_path ./saves/baseline_qwen3_zsre3k --tp_size 1 --num_samples 3000 --seed 0 --quiet --output_path ./runs/baseline_qwen3_zsre3k_eval3000_seed0.json`
+
+Result (3000 samples):
+- Reliability (Src) EM: **0.9743**
+- Generalization (Rephrase) EM: **0.5073**
+
+### Full-scale DBKE runs (this branch)
+Key changes vs the earlier “long run” prototype:
+- Training targets now add **leading space + EOS** (same stop-encouragement trick as the repo baseline).
+- Mixed sampling now uses an **infinite shuffled stream** for off-policy indices (no replacement within a cycle), which is important when `total_steps ≈ dataset_size`.
+- On-policy dataset rebuild is now **batched** (single rollout over ~12k triggers) and prints progress.
+
+Configs / artifacts:
+- E0 (off-policy SFT): `configs/zsre3k_full_e0.yaml` → `saves/zsre3k_full_e0_off_sft` → `runs/zsre3k_full_e0_eval3000_seed0.json`
+- E3 (fixed mix, DPO): `configs/zsre3k_full_e3.yaml` → `saves/zsre3k_full_e3_mix_dpo` → `runs/zsre3k_full_e3_eval3000_seed0.json`
+- E5 (dynamic gate, DPO): `configs/zsre3k_full_e5.yaml` → `saves/zsre3k_full_e5_dynamic_gate` → `runs/zsre3k_full_e5_eval3000_seed0.json`
+- E5 (stage-2, dynamic gate + **on-policy SFT**, starts from E0): `configs/zsre3k_stage2_e5_sft.yaml` → `saves/zsre3k_stage2_e5_sft_gate` → `runs/zsre3k_stage2_e5_sft_gate_eval3000_seed0.json`
+
+Results (3000 samples):
+
+| method | model | Reliability (Src) EM | Generalization (Rephrase) EM |
+|---|---|---:|---:|
+| Repo baseline | `./saves/baseline_qwen3_zsre3k` | 0.9743 | 0.5073 |
+| DBKE E0 | `./saves/zsre3k_full_e0_off_sft` | **0.9950** | 0.4943 |
+| DBKE E3 | `./saves/zsre3k_full_e3_mix_dpo` | 0.9153 | 0.5253 |
+| DBKE E5 (DPO gate) | `./saves/zsre3k_full_e5_dynamic_gate` | 0.9133 | 0.5227 |
+| DBKE E5 (stage-2, SFT gate) | `./saves/zsre3k_stage2_e5_sft_gate` | **0.9960** | **0.6690** |
+
+### Takeaway vs research objective
+- Pure off-policy SFT (E0) matches/exceeds baseline reliability, but **does not improve rephrase generalization**.
+- Fixed-mix / gated **on-policy DPO** improves generalization slightly, but **hurts reliability** (trade-off).
+- A **dynamic gate** that uses a **milder on-policy objective (SFT)** in a stage-2 run **beats the repo baseline on both reliability and generalization** on the full 3k set.
+
 ## Interpretation vs research objective
 1) **The system is runnable end-to-end**, and after fixing loss masking, **off-policy edit success is measurable**.
    - E0 reaches **8.8% strict EM** and **13.8% contains** on 500 samples.

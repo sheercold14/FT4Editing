@@ -25,17 +25,33 @@ class MixedBatchSampler(Sampler):
 
     def __iter__(self) -> Iterator[tuple]:
         rng = random.Random(self.seed)
+        off_stream = _shuffled_stream(self.off_size, rng)
+        if self.on_size <= 0:
+            on_stream = None
+        elif self.conflict_scores and len(self.conflict_scores) == self.on_size:
+            on_stream = _weighted_stream(self.on_size, self.conflict_scores, rng)
+        else:
+            on_stream = _shuffled_stream(self.on_size, rng)
         for _ in range(self.total_steps):
             use_on = self.on_size > 0 and rng.random() < self.ratio
             if use_on:
-                if self.conflict_scores and len(self.conflict_scores) == self.on_size:
-                    idx = rng.choices(range(self.on_size), weights=self.conflict_scores, k=1)[0]
-                else:
-                    idx = rng.randrange(self.on_size)
-                yield ("on", idx)
+                yield ("on", next(on_stream))  # type: ignore[arg-type]
             else:
-                idx = rng.randrange(self.off_size)
-                yield ("off", idx)
+                yield ("off", next(off_stream))
 
     def __len__(self) -> int:
         return self.total_steps
+
+
+def _shuffled_stream(size: int, rng: random.Random) -> Iterator[int]:
+    while True:
+        indices = list(range(size))
+        rng.shuffle(indices)
+        for idx in indices:
+            yield idx
+
+
+def _weighted_stream(size: int, weights: list, rng: random.Random) -> Iterator[int]:
+    population = list(range(size))
+    while True:
+        yield rng.choices(population, weights=weights, k=1)[0]

@@ -9,5 +9,6 @@ __pycache__/
 saves/
 logs/
 reports/
+runs/
 data/generated/
 data/__pycache__/

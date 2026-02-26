@@ -6,6 +6,26 @@ import torch
 import torch.nn.functional as F
 
 
+def _prepare_targets(
+    tokenizer,
+    targets: List[str],
+    *,
+    add_leading_space: bool,
+    add_eos: bool,
+) -> List[str]:
+    eos = getattr(tokenizer, "eos_token", None) if add_eos else None
+    prepared: List[str] = []
+    for target in targets:
+        text = "" if target is None else str(target)
+        text = text.strip()
+        if add_leading_space and text and not text.startswith(" "):
+            text = " " + text
+        if eos and text and not text.endswith(eos):
+            text = text + eos
+        prepared.append(text)
+    return prepared
+
+
 def _tokenize_prompt_target(tokenizer, prompts: List[str], targets: List[str], device: torch.device) -> Dict[str, torch.Tensor]:
     prompt_batch = tokenizer(prompts, return_tensors="pt", padding=True).to(device)
     full_texts = [p + t for p, t in zip(prompts, targets)]
@@ -25,14 +45,34 @@ def _tokenize_prompt_target(tokenizer, prompts: List[str], targets: List[str], d
     return {"input_ids": full_batch["input_ids"], "attention_mask": full_batch["attention_mask"], "labels": labels}
 
 
-def ce_loss(model, tokenizer, prompts: List[str], targets: List[str], device: torch.device) -> torch.Tensor:
-    batch = _tokenize_prompt_target(tokenizer, prompts, targets, device)
+def ce_loss(
+    model,
+    tokenizer,
+    prompts: List[str],
+    targets: List[str],
+    device: torch.device,
+    *,
+    add_leading_space: bool = True,
+    add_eos: bool = True,
+) -> torch.Tensor:
+    prepared = _prepare_targets(tokenizer, targets, add_leading_space=add_leading_space, add_eos=add_eos)
+    batch = _tokenize_prompt_target(tokenizer, prompts, prepared, device)
     outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"])
     return outputs.loss
 
 
-def continuation_logp(model, tokenizer, prompts: List[str], targets: List[str], device: torch.device) -> torch.Tensor:
-    batch = _tokenize_prompt_target(tokenizer, prompts, targets, device)
+def continuation_logp(
+    model,
+    tokenizer,
+    prompts: List[str],
+    targets: List[str],
+    device: torch.device,
+    *,
+    add_leading_space: bool = True,
+    add_eos: bool = False,
+) -> torch.Tensor:
+    prepared = _prepare_targets(tokenizer, targets, add_leading_space=add_leading_space, add_eos=add_eos)
+    batch = _tokenize_prompt_target(tokenizer, prompts, prepared, device)
     logits = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]).logits[:, :-1, :]
     labels = batch["labels"][:, 1:]
     valid_mask = labels != -100
@@ -54,12 +94,14 @@ def dpo_loss(
 ) -> torch.Tensor:
     # Compute chosen/rejected logps in one pass each for policy/ref to cut tokenization + forward overhead.
     combined_prompts = prompts + prompts
-    combined_targets = chosen + rejected
-    pi_all = continuation_logp(policy_model, tokenizer, combined_prompts, combined_targets, device)
+    chosen_prepared = _prepare_targets(tokenizer, chosen, add_leading_space=True, add_eos=True)
+    rejected_prepared = _prepare_targets(tokenizer, rejected, add_leading_space=True, add_eos=False)
+    combined_targets = chosen_prepared + rejected_prepared
+    pi_all = continuation_logp(policy_model, tokenizer, combined_prompts, combined_targets, device, add_leading_space=False, add_eos=False)
     pi_chosen = pi_all[: len(prompts)]
     pi_rejected = pi_all[len(prompts) :]
     with torch.no_grad():
-        ref_all = continuation_logp(ref_model, tokenizer, combined_prompts, combined_targets, device)
+        ref_all = continuation_logp(ref_model, tokenizer, combined_prompts, combined_targets, device, add_leading_space=False, add_eos=False)
         ref_chosen = ref_all[: len(prompts)]
         ref_rejected = ref_all[len(prompts) :]
     logits = beta * ((pi_chosen - pi_rejected) - (ref_chosen - ref_rejected))
