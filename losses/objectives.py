@@ -48,11 +48,16 @@ def dpo_loss(
     beta: float,
     device: torch.device,
 ) -> torch.Tensor:
-    pi_chosen = continuation_logp(policy_model, tokenizer, prompts, chosen, device)
-    pi_rejected = continuation_logp(policy_model, tokenizer, prompts, rejected, device)
+    # Compute chosen/rejected logps in one pass each for policy/ref to cut tokenization + forward overhead.
+    combined_prompts = prompts + prompts
+    combined_targets = chosen + rejected
+    pi_all = continuation_logp(policy_model, tokenizer, combined_prompts, combined_targets, device)
+    pi_chosen = pi_all[: len(prompts)]
+    pi_rejected = pi_all[len(prompts) :]
     with torch.no_grad():
-        ref_chosen = continuation_logp(ref_model, tokenizer, prompts, chosen, device)
-        ref_rejected = continuation_logp(ref_model, tokenizer, prompts, rejected, device)
+        ref_all = continuation_logp(ref_model, tokenizer, combined_prompts, combined_targets, device)
+        ref_chosen = ref_all[: len(prompts)]
+        ref_rejected = ref_all[len(prompts) :]
     logits = beta * ((pi_chosen - pi_rejected) - (ref_chosen - ref_rejected))
     return -F.logsigmoid(logits).mean()
 

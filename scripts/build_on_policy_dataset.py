@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 import sys
 import time
+import os
+import tempfile
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
@@ -43,6 +45,14 @@ def main() -> None:
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--force", action="store_true", help="Regenerate even if output seems complete.")
+    parser.add_argument(
+        "--score_mode",
+        type=str,
+        default="mismatch",
+        choices=["mismatch", "full"],
+        help="Conflict score mode: mismatch-only (fast) or full (includes logprob margins; slow).",
+    )
+    parser.add_argument("--progress_every", type=int, default=50)
     args = parser.parse_args()
 
     off_ds = OffPolicySFTDataset(args.off_data_path, mapper=RecordMapper())
@@ -71,6 +81,7 @@ def main() -> None:
     tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer.padding_side = "left"
     torch_dtype = torch.float16 if device.type == "cuda" else None
     model = AutoModelForCausalLM.from_pretrained(
         args.model_path, trust_remote_code=True, torch_dtype=torch_dtype
@@ -79,24 +90,59 @@ def main() -> None:
 
     editor = RuleBasedEditor()
 
-    rows = []
-    for idx, rec in enumerate(records):
-        prompts = generate_triggers(rec, args.k)
-        if not prompts:
-            continue
-        preds = rollout(
-            model=model,
-            tokenizer=tokenizer,
-            prompts=prompts,
-            gen_cfg={"temperature": 0.0, "top_p": 1.0, "max_new_tokens": 32},
-            seed=args.seed + idx,
-        )
-        y_pos = rec.get("target_new", "")
-        edits = [editor.edit(prompt, pred, rec) for prompt, pred in zip(prompts, preds)]
-        score = compute_conflict_score(prompts, preds, y_pos, model=model, tokenizer=tokenizer)
-        for prompt, pred, chosen in zip(prompts, preds, edits):
-            rows.append(
-                {
+    output_path = Path(args.output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    start_time = time.time()
+    rows_written = 0
+
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        delete=False,
+        dir=str(output_path.parent),
+        prefix=output_path.name + ".",
+        suffix=".tmp",
+    ) as handle:
+        tmp_path = Path(handle.name)
+        for idx, rec in enumerate(records):
+            if args.progress_every > 0 and idx > 0 and idx % args.progress_every == 0:
+                elapsed = max(1e-6, time.time() - start_time)
+                rate = rows_written / elapsed
+                remaining = (expected_rows - rows_written) / max(1e-6, rate)
+                print(
+                    json.dumps(
+                        {
+                            "status": "progress",
+                            "records_done": idx,
+                            "records_total": len(records),
+                            "rows_written": rows_written,
+                            "rows_expected": expected_rows,
+                            "rows_per_sec": round(rate, 3),
+                            "eta_sec": int(remaining),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    flush=True,
+                )
+
+            prompts = generate_triggers(rec, args.k)
+            if not prompts:
+                continue
+            preds = rollout(
+                model=model,
+                tokenizer=tokenizer,
+                prompts=prompts,
+                gen_cfg={"temperature": 0.0, "top_p": 1.0, "top_k": 0, "max_new_tokens": 32, "batch_size": 16},
+                seed=args.seed + idx,
+            )
+            y_pos = rec.get("target_new", "")
+            edits = [editor.edit(prompt, pred, rec) for prompt, pred in zip(prompts, preds)]
+            if args.score_mode == "full":
+                score = compute_conflict_score(prompts, preds, y_pos, model=model, tokenizer=tokenizer)
+            else:
+                score = compute_conflict_score(prompts, preds, y_pos)
+            for prompt, pred, chosen in zip(prompts, preds, edits):
+                row = {
                     "edit_id": rec.get("case_id", idx),
                     "prompt": prompt,
                     "chosen": chosen,
@@ -106,11 +152,14 @@ def main() -> None:
                     "mismatch_rate": score["mismatch_rate"],
                     "margin": score["margin"],
                 }
-            )
+                handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                rows_written += 1
 
-    dump_jsonl(args.output_path, rows)
-    Path(args.output_path).parent.mkdir(parents=True, exist_ok=True)
-    print(json.dumps({"output_path": args.output_path, "num_rows": len(rows)}, ensure_ascii=False))
+        handle.flush()
+        os.fsync(handle.fileno())
+
+    tmp_path.replace(output_path)
+    print(json.dumps({"output_path": str(output_path), "num_rows": rows_written}, ensure_ascii=False))
 
 
 if __name__ == "__main__":

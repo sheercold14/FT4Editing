@@ -30,6 +30,13 @@ def normalize_answer(s: str) -> str:
 def exact_match(prediction: str, target: str) -> float:
     return float(normalize_answer(prediction) == normalize_answer(target))
 
+def contains_match(prediction: str, target: str) -> float:
+    pred_n = normalize_answer(prediction)
+    tgt_n = normalize_answer(target)
+    if not tgt_n:
+        return 0.0
+    return float(tgt_n == pred_n or tgt_n in pred_n)
+
 
 def generate_answer(model, tokenizer, prompt: str, max_new_tokens: int = 24) -> str:
     device = next(model.parameters()).device
@@ -65,22 +72,28 @@ def evaluate(model_path: str, data_path: str, num_samples: int = 100) -> Dict[st
     model.to(device)
     model.eval()
 
-    edit_scores: List[float] = []
-    locality_scores: List[float] = []
+    edit_em: List[float] = []
+    edit_contains: List[float] = []
+    locality_em: List[float] = []
+    locality_contains: List[float] = []
     for record in records:
         pred = generate_answer(model, tokenizer, record["prompt"])
-        edit_scores.append(exact_match(pred, record["target_new"]))
+        edit_em.append(exact_match(pred, record["target_new"]))
+        edit_contains.append(contains_match(pred, record["target_new"]))
 
         loc_prompt = record.get("locality_prompt")
         loc_target = record.get("locality_ground_truth")
         if loc_prompt and loc_target:
             loc_pred = generate_answer(model, tokenizer, loc_prompt)
-            locality_scores.append(exact_match(loc_pred, str(loc_target)))
+            locality_em.append(exact_match(loc_pred, str(loc_target)))
+            locality_contains.append(contains_match(loc_pred, str(loc_target)))
 
     return {
         "num_samples": len(records),
-        "edit_success": sum(edit_scores) / max(1, len(edit_scores)),
-        "locality": sum(locality_scores) / max(1, len(locality_scores)) if locality_scores else 0.0,
+        "edit_success": sum(edit_em) / max(1, len(edit_em)),
+        "edit_success_contains": sum(edit_contains) / max(1, len(edit_contains)),
+        "locality": sum(locality_em) / max(1, len(locality_em)) if locality_em else 0.0,
+        "locality_contains": sum(locality_contains) / max(1, len(locality_contains)) if locality_contains else 0.0,
     }
 
 

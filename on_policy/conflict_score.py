@@ -9,6 +9,13 @@ import torch.nn.functional as F
 def _norm(text: str) -> str:
     return " ".join(text.lower().strip().split())
 
+def _contains_answer(pred: str, target: str) -> bool:
+    pred_n = _norm(pred)
+    tgt_n = _norm(target)
+    if not tgt_n:
+        return False
+    return tgt_n == pred_n or tgt_n in pred_n
+
 
 def _sequence_logp(model, tokenizer, prompt: str, target: str, device: torch.device) -> float:
     joined = prompt + target
@@ -40,7 +47,7 @@ def compute_conflict_score(
     margins: List[float] = []
     for prompt, pred in zip(prompts, preds):
         if verifier is None:
-            mismatch = float(_norm(pred) != _norm(y_pos))
+            mismatch = float(not _contains_answer(pred, y_pos))
         else:
             mismatch = float(verifier(prompt, pred, y_pos) < 0.5)
         mismatches.append(mismatch)
@@ -53,6 +60,9 @@ def compute_conflict_score(
 
     mismatch_rate = float(sum(mismatches) / len(mismatches))
     margin = float(sum(margins) / len(margins)) if margins else 0.0
-    normalized_margin = 1.0 / (1.0 + torch.exp(torch.tensor(margin)).item()) if margins else 0.0
-    score = float(0.7 * mismatch_rate + 0.3 * normalized_margin)
+    if not margins:
+        score = mismatch_rate
+    else:
+        normalized_margin = 1.0 / (1.0 + torch.exp(torch.tensor(margin)).item())
+        score = float(0.7 * mismatch_rate + 0.3 * normalized_margin)
     return {"mismatch_rate": mismatch_rate, "margin": margin, "score": score}

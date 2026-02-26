@@ -11,6 +11,13 @@ from data.datasets import load_records
 def _norm(text: str) -> str:
     return " ".join(str(text).lower().strip().split())
 
+def _contains_answer(pred: str, target: str) -> bool:
+    pred_n = _norm(pred)
+    tgt_n = _norm(target)
+    if not tgt_n:
+        return False
+    return tgt_n == pred_n or tgt_n in pred_n
+
 
 def trigger_error_rate(records: List[Dict]) -> float:
     if not records:
@@ -20,7 +27,7 @@ def trigger_error_rate(records: List[Dict]) -> float:
     for record in records:
         chosen = record.get("chosen") or record.get("target_new", "")
         rejected = record.get("rejected", "")
-        if chosen and _norm(chosen) != _norm(rejected):
+        if chosen and not _contains_answer(rejected, chosen):
             mismatches += 1
         total += 1
     return mismatches / max(total, 1)
@@ -29,16 +36,22 @@ def trigger_error_rate(records: List[Dict]) -> float:
 def conflict_mass(records: List[Dict]) -> float:
     if not records:
         return 0.0
-    values = [max(0.0, 1.0 - float(record.get("margin", 0.0))) for record in records]
-    return sum(values) / len(values)
+    margins = [float(record.get("margin", 0.0) or 0.0) for record in records]
+    if any(abs(m) > 1e-6 for m in margins):
+        values = [max(0.0, 1.0 - m) for m in margins]
+        return sum(values) / len(values)
+    # Fallback when margins are not computed: use mismatch-based proxy.
+    return trigger_error_rate(records)
 
 
 def eval_on_policy(path: str) -> Dict[str, float]:
     rows = load_records(path)
+    avg_conflict = sum(float(r.get("conflict_score", 0.0) or 0.0) for r in rows) / max(1, len(rows))
     metrics = {
         "num_samples": len(rows),
         "trigger_error_rate": trigger_error_rate(rows),
         "conflict_mass": conflict_mass(rows),
+        "avg_conflict_score": avg_conflict,
     }
     return metrics
 
