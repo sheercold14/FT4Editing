@@ -74,14 +74,16 @@ report_path=os.environ.get("REPORT_PATH")
 if report_path:
     with open(report_path,"w",encoding="utf-8") as f:
         json.dump(out,f,indent=2,ensure_ascii=False)
-keys=["edit_success","locality","trigger_error_rate","conflict_mass"]
+keys=["edit_success","edit_success_contains","locality","locality_contains","trigger_error_rate","conflict_mass"]
 print("model\t" + "\t".join(keys))
 for m in models:
     off=out[m]["off_policy"]
     on=out[m]["on_policy"]
     row={
         "edit_success": off.get("edit_success","NA"),
+        "edit_success_contains": off.get("edit_success_contains","NA"),
         "locality": off.get("locality","NA"),
+        "locality_contains": off.get("locality_contains","NA"),
         "trigger_error_rate": on.get("trigger_error_rate","NA"),
         "conflict_mass": on.get("conflict_mass","NA"),
     }
