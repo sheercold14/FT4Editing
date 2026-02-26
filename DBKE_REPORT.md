@@ -37,18 +37,28 @@ Config summary (long run):
 - Off-policy eval set: 500 samples
 
 ## Results (ZsRE)
-Metrics printed by the runner:
+### First long run (before loss masking fix)
+This run produced near-zero strict EM and ~6% “contains” success. The primary root cause was a **loss masking bug** in `losses/objectives.py` when the tokenizer used right-padding (target tokens were masked incorrectly). This made learning much weaker than intended.
+
+### Rerun (after loss masking fix)
+After fixing masking to respect `tokenizer.padding_side` and setting training/eval tokenizers to left padding, strict EM increased substantially.
+
+Run artifacts:
+- Log: `logs/run_dbke_long_rerun_20260226_141551.log`
+- JSON: `reports/dbke_long_rerun_20260226_141551.json`
+
+Metrics printed by the runner (off-policy eval `num_samples=500`, on-policy eval `400×4=1600`):
 
 | model | edit_success (EM) | edit_success_contains | locality (EM) | locality_contains | trigger_error_rate | conflict_mass |
 |---|---:|---:|---:|---:|---:|---:|
-| long_e0_off_sft | 0.0000 | 0.0600 | 0.0000 | 0.0000 | 0.9500 | 0.9500 |
-| long_e3_mix_dpo | 0.0020 | 0.0640 | 0.0000 | 0.0000 | 0.9513 | 0.9513 |
-| long_e5_dynamic_gate | 0.0000 | 0.0660 | 0.0000 | 0.0000 | 0.9494 | 0.9494 |
+| long_e0_off_sft | 0.0880 | 0.1380 | 0.0000 | 0.0000 | 0.9125 | 0.9125 |
+| long_e3_mix_dpo | 0.0540 | 0.0800 | 0.0000 | 0.0000 | 0.9338 | 0.9338 |
+| long_e5_dynamic_gate | 0.0520 | 0.0780 | 0.0000 | 0.0000 | 0.9288 | 0.9288 |
 
 ## Interpretation vs research objective
-1) **The system is runnable end-to-end**, but **editing effectiveness is still low** on this setup.
-   - Strict EM is ~0–0.2% and “contains” success is ~6–6.6% on 500 off-policy samples.
-   - On-policy trigger error remains ~95% (model outputs don’t contain the target answer on most triggers).
+1) **The system is runnable end-to-end**, and after fixing loss masking, **off-policy edit success is measurable**.
+   - E0 reaches **8.8% strict EM** and **13.8% contains** on 500 samples.
+   - On-policy trigger error remains high (~91–93%), so the main remaining problem is on-policy conflict suppression.
 
 2) **Dynamic gate didn’t produce a large separation** vs fixed mix in this run.
    - A key reason: the conflict score used in this run is **mismatch-only**, so most samples are “high conflict”.
@@ -66,4 +76,3 @@ If we want E5 to show its intended advantage (reduce on-policy conflicts without
 2) **Increase effective learning signal**:
    - More steps or slightly higher LR, and/or unfreeze a bit more capacity (multiple layers or wider module).
 3) **Add a small general/ability set** for regression monitoring (optional but aligns with “locality” story).
-

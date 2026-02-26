@@ -64,6 +64,7 @@ def evaluate(model_path: str, data_path: str, num_samples: int = 100) -> Dict[st
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer.padding_side = "left"
     model = AutoModelForCausalLM.from_pretrained(model_path, trust_remote_code=True)
     if model.get_input_embeddings().num_embeddings != len(tokenizer):
         model.resize_token_embeddings(len(tokenizer))

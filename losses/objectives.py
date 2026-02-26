@@ -16,7 +16,11 @@ def _tokenize_prompt_target(tokenizer, prompts: List[str], targets: List[str], d
     labels = full_batch["input_ids"].clone()
     labels[:] = -100
     for idx in range(labels.shape[0]):
-        start = max(0, labels.shape[1] - int(full_lens[idx]) + int(prompt_lens[idx]))
+        pad_len = labels.shape[1] - int(full_lens[idx])
+        if getattr(tokenizer, "padding_side", "right") == "left":
+            start = max(0, pad_len + int(prompt_lens[idx]))
+        else:
+            start = max(0, int(prompt_lens[idx]))
         labels[idx, start:] = full_batch["input_ids"][idx, start:]
     return {"input_ids": full_batch["input_ids"], "attention_mask": full_batch["attention_mask"], "labels": labels}
 

@@ -127,6 +127,7 @@ def train(config: TrainConfig) -> None:
     tokenizer = AutoTokenizer.from_pretrained(config.model_name_or_path, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
+    tokenizer.padding_side = "left"
     torch_dtype = torch.bfloat16 if device.type == "cuda" else None
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name_or_path, trust_remote_code=True, torch_dtype=torch_dtype
