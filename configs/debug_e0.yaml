@@ -1,0 +1,20 @@
+model_name_or_path: "/data/shichao/data/Qwen3-1.7B"
+off_data_path: "./data/zsre/zsre_3k.json"
+on_data_path: "./data/generated/debug_on_policy_zsre.jsonl"
+save_model_dir: "./saves/debug_e0_off_sft"
+objective: "off_sft"
+use_dynamic_gate: false
+lambda_on: 0.0
+lambda_off: 1.0
+on_ratio: 0.0
+lr: 2.0e-5
+batch_size: 1
+num_epochs: 1
+steps_per_epoch: 10
+refresh_interval: 1
+k_triggers: 2
+beta: 0.1
+device: 0
+seed: 42
+max_refresh_records: 20
+

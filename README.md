@@ -21,6 +21,35 @@ To run the editing/fine-tuning procedure, you only need to specify the path to t
 python fine-tune.py --config_path ./hparams/qwen2.5-7b.yaml
 ```
 
+### Dynamic Batchwise Knowledge Editing (DBKE)
+
+New pipeline components are added for on-policy data construction, dynamic gate training, and on-policy conflict evaluation.
+
+1) Build on-policy preference data:
+
+```shell
+python scripts/build_on_policy_dataset.py \
+  --model_path /data/shichao/data/Qwen3-1.7B \
+  --off_data_path ./data/zsre/zsre_3k.json \
+  --output_path ./data/generated/on_policy_zsre.jsonl
+```
+
+2) Train experiment config (examples: `e0`, `e3`, `e5`):
+
+```shell
+python scripts/train.py --config_path ./configs/e5.yaml
+```
+
+3) Evaluate edit + on-policy metrics:
+
+```shell
+python scripts/eval_all.py \
+  --model_path ./saves/e5_dynamic_gate \
+  --edit_eval_data ./data/zsre/zsre_3k.json \
+  --on_policy_path ./data/generated/on_policy_zsre.jsonl \
+  --output_path ./saves/e5_dynamic_gate/eval_report.json
+```
+
 ### Evaluation
 
 **Editing Metric Evaluation**
