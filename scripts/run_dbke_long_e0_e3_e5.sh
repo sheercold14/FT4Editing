@@ -6,8 +6,8 @@ cd "$(dirname "$0")/.."
 mkdir -p logs reports data/generated
 
 ts="$(date +%Y%m%d_%H%M%S)"
-log="logs/run_dbke_long_${ts}.log"
-report="reports/dbke_long_${ts}.json"
+log="logs/run_dbke_long_rerun_${ts}.log"
+report="reports/dbke_long_rerun_${ts}.json"
 
 echo "[START] $(date -Iseconds)" | tee -a "$log"
 echo "[INFO] pwd=$(pwd)" | tee -a "$log"
