@@ -175,3 +175,43 @@ Quick check (MMLU, limit=200, 0-shot; using `lm_eval` outputs under `runs/genera
 1) **CounterFact-style rephrase generator**: explicitly synthesize “distractor prefix + prompt tail” triggers (our simple version did not beat the previous SFT-gate; likely needs stronger perturbations and/or multiple prefixes).
 2) **Dataset-aware gate**: add a regime that **skips stage-2** when (a) off-policy success is high and (b) on-policy mismatch is low/medium, to avoid harming strong baselines (notably WikiBigEdit).
 3) **Better editor**: replace `RuleBasedEditor` with a stronger teacher (API/local) to generate *natural* minimal corrections; this is the most likely way to make DPO-style objectives help rather than hurt.
+
+---
+
+## Boundary check: what does “Rephrase” actually measure here?
+We added a lightweight analysis script to bucket each dataset’s `rephrase_prompt` into coarse categories based on string similarity and “prefix-noise” patterns:
+- Script: `scripts/analyze_rephrase_buckets.py`
+- Buckets are *heuristic*; the goal is to make the evaluation boundary explicit (semantic paraphrase vs prefix-noise robustness), not to claim a perfect taxonomy.
+
+### Bucket composition (3k samples)
+- CounterFact-3k bucket counts (`runs/buckets_counterfact3k.json`):
+  - `prefix_noise_semantic`: 1412 (47.1%)
+  - `other`: 1070 (35.7%)
+  - `semantic_paraphrase_mid`: 323 (10.8%)
+  - `distractor_prefix_trunc`: 136 (4.5%)
+  - `semantic_paraphrase_high`: 29 (1.0%)
+  - `distractor_prefix_full`: 30 (1.0%)
+- WikiBigEdit-3k bucket counts (`runs/buckets_wikibigedit3k.json`):
+  - `semantic_paraphrase_high`: 1476 (49.2%)
+  - `semantic_paraphrase_mid`: 1090 (36.3%)
+  - `other`: 431 (14.4%)
+
+**Interpretation:** CounterFact “Rephrase” is largely a *prefix-noise robustness* test, while WikiBigEdit “Rephrase” is mostly *semantic paraphrase*.
+
+### Per-bucket performance (selected models)
+CounterFact (baseline vs our best stage2 SFT-gate; files: `runs/bucket_eval_counterfact3k_baseline.json`, `runs/bucket_eval_counterfact3k_stage2_sft_gate.json`):
+- Overall Rephrase EM: 0.1960 → 0.2057
+- Improvements mainly come from:
+  - `prefix_noise_semantic`: 0.1778 → 0.1976 (+1.98pp)
+  - (small bucket) `semantic_paraphrase_high`: 0.3103 → 0.3793 (+6.90pp)
+- Regressions:
+  - `distractor_prefix_trunc`: 0.2353 → 0.1765 (-5.88pp)
+
+WikiBigEdit (paper baseline vs our aligned E0; files: `runs/bucket_eval_wikibigedit3k_baseline.json`, `runs/bucket_eval_wikibigedit3k_e0_aligned.json`):
+- Overall Rephrase EM: 0.7593 → 0.7433 (-1.60pp)
+- Largest drop is in `semantic_paraphrase_mid`: 0.6917 → 0.6578 (-3.39pp), i.e., we are losing on the *semantic paraphrase* portion.
+
+### Practical consequence for paper framing
+If we claim “improves generalization”, we must specify *which generalization*:
+- CounterFact gains are about **robustness under prefix-noise + partial prompt retention**.
+- WikiBigEdit requires **semantic paraphrase invariance**, where our current on-policy/synthetic-trigger ideas are not yet aligned and can hurt.
