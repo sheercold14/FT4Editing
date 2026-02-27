@@ -1,0 +1,13 @@
+model_name_or_path: "/data/shichao/data/Qwen3-1.7B"
+data_path: "./data/zsre/zsre_3k.json"
+save_model_dir: "./saves/baseline_qwen3_zsre3k"
+
+layer: 6
+rewrite_module: "model.layers.{}.mlp.down_proj.weight"
+
+lr: 5.0e-4
+batch_size: 50
+num_steps: 25
+weight_decay: 0
+device: 0
+
