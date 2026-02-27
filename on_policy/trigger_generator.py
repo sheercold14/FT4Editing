@@ -12,6 +12,59 @@ def _pick_prompt(edit_record: Dict) -> str:
         or ""
     ).strip()
 
+def generate_suffix_completions(prompt: str, *, max_variants: int = 2) -> List[str]:
+    """
+    Generate lightweight suffix-extended prompt variants to better match CounterFact-style rephrase prompts,
+    which often restate the relation more explicitly (e.g., "speaks the language", "is located in the continent").
+
+    NOTE: Heuristic and dataset-dependent; should be used only as synthetic triggers (on-policy), not for evaluation.
+    """
+    p = (prompt or "").strip()
+    if not p:
+        return []
+    p_l = p.lower()
+
+    suffixes: List[str] = []
+    def add(s: str) -> None:
+        s = s.strip()
+        if s and s.lower() != p_l:
+            suffixes.append(s)
+
+    # Common CounterFact prompt patterns (fragments).
+    if p_l.endswith(" speaks") or p_l.endswith(" speaks the"):
+        add(p + " language")
+        add(p + " the language")
+    if p_l.endswith(" died in") or p_l.endswith(" died at"):
+        add(p + " the city of")
+        add(p + " the country of")
+    if p_l.endswith(" was born in") or p_l.endswith(" born in"):
+        add(p + " the city of")
+        add(p + " the country of")
+    if p_l.endswith(" is in") or p_l.endswith(" is within") or p_l.endswith(" is located in"):
+        add(p + " the continent")
+        add(p + " the country")
+    if p_l.endswith(" originated in") or p_l.endswith(" was founded in") or p_l.endswith(" was created in"):
+        add(p + " the city of")
+        add(p + " the country of")
+    if p_l.endswith(" is written in") or p_l.endswith(" written in"):
+        add(p + " language")
+        add(p + " the language")
+    if p_l.endswith(" plays") or p_l.endswith(" play") or p_l.endswith(" performs on the"):
+        add(p + " sport")
+        add(p + " instrument")
+
+    # Dedup + cap.
+    out: List[str] = []
+    seen = set()
+    for s in suffixes:
+        k = s.lower()
+        if k and k not in seen:
+            out.append(s)
+            seen.add(k)
+        if len(out) >= int(max_variants):
+            break
+    return out
+
 
 def generate_triggers(
     edit_record: Dict,

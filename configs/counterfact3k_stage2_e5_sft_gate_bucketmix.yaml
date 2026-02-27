@@ -1,0 +1,56 @@
+model_name_or_path: "./saves/counterfact3k_full_e0_off_sft"
+off_data_path: "./data/counterfact/counterfact_3k.json"
+on_data_path: "./data/generated/counterfact3k_stage2_on_bucketmix.jsonl"
+save_model_dir: "./saves/counterfact3k_stage2_e5_sft_gate_bucketmix"
+
+objective: "dynamic_gate"
+use_dynamic_gate: true
+on_objective: "sft"
+tau_low: 0.2
+tau_high: 0.7
+lambda_on: 0.7
+lambda_off: 0.3
+on_ratio: 0.5
+
+lr: 1.0e-4
+batch_size: 30
+micro_batch_size: 30
+num_epochs: 3
+steps_per_epoch: 200
+
+refresh_interval: 999
+max_refresh_records: 3000
+conflict_score_mode: "mismatch"
+include_rephrase_triggers: false
+k_triggers: 4
+
+# Bucket-aware trigger mix for CounterFact:
+# - template triggers for canonical prompts
+# - distractor prefixes (prefix-noise robustness)
+# - heuristic suffix completions (make relation explicit)
+trigger_mode: "bucket_mix"
+template_triggers: 2
+distractor_pool_size: 2048
+distractor_prefixes_per_record: 1
+distractor_max_chars: 120
+suffix_triggers_per_record: 2
+
+# (Optional) paraphrase; kept off by default for CounterFact
+paraphrase_per_prompt: 0
+
+# Avoid accidentally reproducing eval rephrase prompts too closely
+filter_against_eval_rephrase_threshold: 0.92
+
+beta: 0.1
+
+gen_cfg:
+  temperature: 0.0
+  top_p: 1.0
+  max_new_tokens: 32
+  batch_size: 64
+
+device: 0
+seed: 42
+train_layer: 6
+rewrite_module: "model.layers.{}.mlp.down_proj.weight"
+

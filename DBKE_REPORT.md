@@ -207,6 +207,13 @@ CounterFact (baseline vs our best stage2 SFT-gate; files: `runs/bucket_eval_coun
 - Regressions:
   - `distractor_prefix_trunc`: 0.2353 → 0.1765 (-5.88pp)
 
+### Attempted fix: bucket-mix + tail-anchored prefix-noise triggers (CounterFact)
+We implemented two CounterFact-specific synthetic trigger variants under `trigger_mode: bucket_mix`:
+- `counterfact3k_stage2_e5_sft_gate_bucketmix`: distractor-prefix + heuristic suffix completions (no gain; overall Rephrase EM ≈ 0.2040)
+- `counterfact3k_stage2_e5_sft_gate_prefixtail`: adds a model-generated **prefix-noise + tail-anchored** rewrite (aiming to recover `distractor_prefix_trunc`), but did not improve that bucket; overall Rephrase EM ≈ 0.2030.
+
+This suggests the remaining CounterFact weakness is not solved by “generic prefix-noise triggers” alone; we likely need a generator that matches the *specific truncation morphology* used in CounterFact rephrases (e.g., verb form changes while preserving tail bigrams).
+
 WikiBigEdit (paper baseline vs our aligned E0; files: `runs/bucket_eval_wikibigedit3k_baseline.json`, `runs/bucket_eval_wikibigedit3k_e0_aligned.json`):
 - Overall Rephrase EM: 0.7593 → 0.7433 (-1.60pp)
 - Largest drop is in `semantic_paraphrase_mid`: 0.6917 → 0.6578 (-3.39pp), i.e., we are losing on the *semantic paraphrase* portion.

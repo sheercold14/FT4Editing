@@ -17,8 +17,9 @@ from losses.objectives import ce_loss, dpo_loss
 from on_policy.conflict_score import compute_conflict_score
 from on_policy.editor_interface import RuleBasedEditor
 from on_policy.paraphrase_generator import generate_paraphrase_triggers
+from on_policy.prefix_noise_generator import generate_prefix_noise_tail_anchored_triggers
 from on_policy.rollout import rollout
-from on_policy.trigger_generator import generate_triggers
+from on_policy.trigger_generator import generate_suffix_completions, generate_triggers
 
 
 @dataclass
@@ -53,15 +54,20 @@ class TrainConfig:
     max_refresh_records: int = 200
     conflict_score_mode: str = "mismatch"  # "mismatch" or "full" (logprob margin)
     include_rephrase_triggers: bool = False
-    trigger_mode: str = "template"  # "template" | "template_paraphrase" | "template_distractor"
+    trigger_mode: str = "template"  # "template" | "template_paraphrase" | "template_distractor" | "bucket_mix"
     template_triggers: int = 2
     paraphrase_per_prompt: int = 0
     paraphrase_gen_cfg: Dict | None = None
     paraphrase_similarity_threshold: float = 0.92
     paraphrase_filter_against_rephrase: bool = True
+    suffix_triggers_per_record: int = 0
     distractor_pool_size: int = 2048
     distractor_prefixes_per_record: int = 1
     distractor_max_chars: int = 120
+    filter_against_eval_rephrase_threshold: float = 0.92
+    prefix_tail_per_prompt: int = 0
+    prefix_tail_words: int = 2
+    prefix_tail_gen_cfg: Dict | None = None
     on_objective: str = "dpo"  # for dynamic_gate: "dpo", "sft", or "auto"
     micro_batch_size: int = 0
     early_stop_loss: float | None = None
@@ -84,6 +90,13 @@ class TrainConfig:
                 "temperature": 0.7,
                 "top_p": 0.95,
                 "max_new_tokens": 64,
+                "batch_size": 16,
+            }
+        if "prefix_tail_gen_cfg" not in data:
+            data["prefix_tail_gen_cfg"] = {
+                "temperature": 0.9,
+                "top_p": 0.95,
+                "max_new_tokens": 96,
                 "batch_size": 16,
             }
         return cls(**data)
@@ -117,7 +130,7 @@ def rebuild_on_policy_dataset(
     prompt_rows: List[Tuple[int, str]] = []
     # For counterfact-style rephrase prompts, adding an unrelated prefix often matches evaluation distribution better.
     distractor_pool: List[str] = []
-    if config.trigger_mode == "template_distractor":
+    if config.trigger_mode in {"template_distractor", "bucket_mix"}:
         seen = set()
         for rec in sampled_records:
             cand = (rec.get("locality_prompt") or rec.get("prompt") or rec.get("src") or "").strip()
@@ -149,7 +162,19 @@ def rebuild_on_policy_dataset(
         for prompt in prompts:
             prompt_rows.append((index, prompt))
 
-    if config.trigger_mode == "template_distractor" and distractor_pool:
+    def _too_similar_to_eval(prompt: str, rec: Dict) -> bool:
+        rp = (rec.get("rephrase_prompt") or rec.get("rephrase") or "").strip()
+        if not rp:
+            return False
+        from difflib import SequenceMatcher
+
+        a = " ".join(prompt.lower().split())
+        b = " ".join(rp.lower().split())
+        if not a or not b:
+            return False
+        return SequenceMatcher(a=a, b=b).ratio() >= float(config.filter_against_eval_rephrase_threshold)
+
+    if config.trigger_mode in {"template_distractor", "bucket_mix"} and distractor_pool:
         import random
 
         rng = random.Random(int(config.seed) + 2026)
@@ -163,20 +188,95 @@ def rebuild_on_policy_dataset(
             keep = list(base_prompts)
             for _ in range(int(config.distractor_prefixes_per_record)):
                 prefix = rng.choice(distractor_pool)
-                candidates = [
-                    f"{prefix}. {prompt}",
-                    f"{prefix}. {prompt_short}",
-                ]
+                if config.trigger_mode == "bucket_mix":
+                    # Reserve slots for other synthetic triggers (e.g., tail-anchored rephrases).
+                    candidates = [f"{prefix}. {prompt_short}"]
+                else:
+                    candidates = [
+                        f"{prefix}. {prompt}",
+                        f"{prefix}. {prompt_short}",
+                    ]
                 for cand in candidates:
                     if len(keep) >= int(config.k_triggers):
                         break
-                    if cand and cand.lower() not in {k.lower() for k in keep}:
+                    if (not cand) or _too_similar_to_eval(cand, rec):
+                        continue
+                    if cand.lower() not in {k.lower() for k in keep}:
                         keep.append(cand)
             for p in keep[: int(config.k_triggers)]:
                 new_rows.append((rec_index, p))
         prompt_rows = new_rows
 
-    if config.trigger_mode == "template_paraphrase" and config.paraphrase_per_prompt > 0:
+    if config.trigger_mode in {"bucket_mix"} and int(config.suffix_triggers_per_record) > 0:
+        new_rows: List[Tuple[int, str]] = []
+        for rec_index, base_prompts in base_prompts_by_rec.items():
+            rec = sampled_records[rec_index]
+            prompt = (rec.get("prompt") or rec.get("src") or "").strip()
+            if not prompt:
+                continue
+            keep = list({p.lower(): p for p in base_prompts}.values())
+            suffixes = generate_suffix_completions(prompt, max_variants=int(config.suffix_triggers_per_record))
+            for cand in suffixes:
+                if len(keep) >= int(config.k_triggers):
+                    break
+                if (not cand) or _too_similar_to_eval(cand, rec):
+                    continue
+                if cand.lower() not in {k.lower() for k in keep}:
+                    keep.append(cand)
+            for p in keep[: int(config.k_triggers)]:
+                new_rows.append((rec_index, p))
+        prompt_rows = new_rows
+
+    if config.trigger_mode in {"bucket_mix"} and int(config.prefix_tail_per_prompt) > 0:
+        # Generate prefix-noise + tail-anchored variants (CounterFact-style).
+        # We apply this at the record level using the canonical prompt (not templates), then cap to k_triggers.
+        rec_prompts: List[Tuple[int, str]] = []
+        for rec_index, _ in base_prompts_by_rec.items():
+            rec = sampled_records[rec_index]
+            prompt = (rec.get("prompt") or rec.get("src") or "").strip()
+            if prompt:
+                rec_prompts.append((rec_index, prompt))
+        flat_prompts = [p for _, p in rec_prompts]
+        protected = {}
+        if config.paraphrase_filter_against_rephrase:
+            for rec_index, p in rec_prompts:
+                rec = sampled_records[rec_index]
+                rp = (rec.get("rephrase_prompt") or rec.get("rephrase") or "").strip()
+                if rp:
+                    protected.setdefault(p, []).append(rp)
+        print(f"[ON] prefix_tail: prompts={len(flat_prompts)} per_prompt={int(config.prefix_tail_per_prompt)} tail_words={int(config.prefix_tail_words)}")
+        grouped = generate_prefix_noise_tail_anchored_triggers(
+            model=model,
+            tokenizer=tokenizer,
+            prompts=flat_prompts,
+            per_prompt=int(config.prefix_tail_per_prompt),
+            tail_words=int(config.prefix_tail_words),
+            gen_cfg=config.prefix_tail_gen_cfg,
+            seed=int(config.seed) + 4242,
+            similarity_threshold=float(config.paraphrase_similarity_threshold),
+            filter_against=protected,
+        )
+        kept = sum(len(g) for g in grouped)
+        print(f"[ON] prefix_tail: kept={kept}")
+        new_rows: List[Tuple[int, str]] = []
+        for (rec_index, base_prompt), outs in zip(rec_prompts, grouped):
+            rec = sampled_records[rec_index]
+            # Start from existing rows for this record.
+            existing = [p for ri, p in prompt_rows if ri == rec_index]
+            keep = list(existing) if existing else list(base_prompts_by_rec.get(rec_index, []))
+            for cand in outs:
+                if len(keep) >= int(config.k_triggers):
+                    break
+                if (not cand) or _too_similar_to_eval(cand, rec):
+                    continue
+                if cand.lower() not in {k.lower() for k in keep}:
+                    keep.append(cand)
+            for p in keep[: int(config.k_triggers)]:
+                new_rows.append((rec_index, p))
+        if new_rows:
+            prompt_rows = new_rows
+
+    if config.trigger_mode in {"template_paraphrase", "bucket_mix"} and config.paraphrase_per_prompt > 0:
         flat_base = [p for _, p in prompt_rows]
         print(f"[ON] paraphrase: base_prompts={len(flat_base)} per_prompt={int(config.paraphrase_per_prompt)}")
         # Build a map of protected strings we want to avoid matching too closely (to prevent leakage).
