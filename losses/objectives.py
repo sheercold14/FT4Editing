@@ -57,8 +57,20 @@ def ce_loss(
 ) -> torch.Tensor:
     prepared = _prepare_targets(tokenizer, targets, add_leading_space=add_leading_space, add_eos=add_eos)
     batch = _tokenize_prompt_target(tokenizer, prompts, prepared, device)
-    outputs = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"])
-    return outputs.loss
+    logits = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"]).logits
+    # Per-sample length-normalized CE (matches fine-tune.py behavior more closely than HF's token-mean loss).
+    shift_logits = logits[:, :-1, :].contiguous()
+    shift_labels = batch["labels"][:, 1:].contiguous()
+    loss_flat = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=-100,
+        reduction="none",
+    ).view(shift_labels.shape[0], -1)
+    valid = shift_labels != -100
+    denom = valid.sum(dim=1).clamp(min=1)
+    per_sample = (loss_flat * valid).sum(dim=1) / denom
+    return per_sample.mean()
 
 
 def continuation_logp(

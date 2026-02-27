@@ -11,11 +11,14 @@ on_ratio: 0.0
 
 lr: 5.0e-4
 weight_decay: 0.0
+optimizer: "adam"
+torch_dtype: "fp32"
 batch_size: 10
 micro_batch_size: 10
 num_epochs: 25
 steps_per_epoch: 300   # 300 * 10 = 3000 samples (one full pass)
 early_stop_loss: 1.0e-2
+skip_step_loss: 1.0e-2
 
 refresh_interval: 999
 max_refresh_records: 0
@@ -28,4 +31,3 @@ device: 0
 seed: 42
 train_layer: 6
 rewrite_module: "model.layers.{}.mlp.down_proj.weight"
-

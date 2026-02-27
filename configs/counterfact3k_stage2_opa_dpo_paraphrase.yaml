@@ -1,0 +1,54 @@
+model_name_or_path: "./saves/counterfact3k_full_e0_off_sft"
+off_data_path: "./data/counterfact/counterfact_3k.json"
+on_data_path: "./data/generated/counterfact3k_stage2_on_opa_paraphrase.jsonl"
+save_model_dir: "./saves/counterfact3k_stage2_opa_dpo_paraphrase"
+
+# OPA-style: align (SFT) -> refresh rollouts -> DPO
+objective: "opa_align_then_dpo"
+opa_align_epochs: 1
+opa_refresh_after_align: true
+
+# Mix on/off during DPO phase (align phase forces on_ratio=1.0)
+lambda_on: 0.7
+lambda_off: 0.3
+on_ratio: 0.5
+
+lr: 1.0e-4
+batch_size: 30
+micro_batch_size: 30
+num_epochs: 3
+steps_per_epoch: 200
+
+# Build on-policy dataset once at the start (no periodic refresh)
+refresh_interval: 999
+max_refresh_records: 3000
+conflict_score_mode: "mismatch"
+include_rephrase_triggers: false
+
+# Synthetic trigger augmentation (no rephrase leakage)
+trigger_mode: "template_paraphrase"
+template_triggers: 2
+paraphrase_per_prompt: 2
+paraphrase_similarity_threshold: 0.92
+paraphrase_filter_against_rephrase: true
+k_triggers: 4
+
+beta: 0.1
+
+gen_cfg:
+  temperature: 0.0
+  top_p: 1.0
+  max_new_tokens: 32
+  batch_size: 64
+
+paraphrase_gen_cfg:
+  temperature: 0.7
+  top_p: 0.95
+  max_new_tokens: 64
+  batch_size: 32
+
+device: 0
+seed: 42
+train_layer: 6
+rewrite_module: "model.layers.{}.mlp.down_proj.weight"
+

@@ -128,3 +128,50 @@ If we want E5 to show its intended advantage (reduce on-policy conflicts without
 2) **Increase effective learning signal**:
    - More steps or slightly higher LR, and/or unfreeze a bit more capacity (multiple layers or wider module).
 3) **Add a small general/ability set** for regression monitoring (optional but aligns with “locality” story).
+
+---
+
+## CounterFact / WikiBigEdit follow-ups (no leakage)
+This section focuses on the repo’s two other datasets and on ideas meant to improve **rephrase** robustness without using dataset-provided `rephrase_prompt` (train-test leakage).
+
+### Baselines vs stage-2 variants (Edit metrics via `eval_edit_metric.py`, 3000 samples, seed=0)
+
+| dataset | method | model | Reliability (Src) EM | Generalization (Rephrase) EM |
+|---|---|---|---:|---:|
+| CounterFact-3k | Repo baseline | `./saves/baseline_qwen3_counterfact3k` | 0.9977 | 0.1947 |
+| CounterFact-3k | DBKE E0 | `./saves/counterfact3k_full_e0_off_sft` | 0.9977 | 0.1923 |
+| CounterFact-3k | DBKE stage-2 (SFT gate) | `./saves/counterfact3k_stage2_e5_sft_gate` | 0.9977 | **0.2057** |
+| CounterFact-3k | DBKE stage-2 (OPA + synthetic paraphrase) | `./saves/counterfact3k_stage2_opa_dpo_paraphrase` | 0.9970 | 0.1583 |
+| CounterFact-3k | DBKE stage-2 (SFT gate + distractor prefixes) | `./saves/counterfact3k_stage2_e5_sft_gate_distractor` | 0.9977 | 0.2050 |
+| WikiBigEdit-3k | Repo baseline | `./saves/baseline_qwen3_wikibigedit3k` | 0.9953 | **0.7583** |
+| WikiBigEdit-3k | DBKE E0 (aligned CE/Adam/fp32/skip) | `./saves/wikibigedit3k_full_e0_off_sft_bs10` | 0.9973 | 0.7427 |
+| WikiBigEdit-3k | DBKE stage-2 (SFT gate) | `./saves/wikibigedit3k_stage2_e5_sft_gate_bs10_aligned` | 0.9957 | 0.6693 |
+| WikiBigEdit-3k | DBKE stage-2 (OPA + synthetic paraphrase) | `./saves/wikibigedit3k_stage2_opa_dpo_paraphrase` | 0.9940 | 0.6380 |
+
+**Takeaway (so far):**
+- On CounterFact-3k, our best no-leak stage-2 remains **SFT-gate** (+~1.1pp Rephrase vs repo baseline).
+- On WikiBigEdit-3k, **any stage-2 on-policy training we tried hurts** Rephrase EM vs repo baseline; the dataset’s rephrase axis seems “already solved” by LocFT-BF, and extra on-policy adaptation becomes a net distribution shift.
+
+### Why “OPA align → refresh → DPO” underperformed here
+We implemented `objective: opa_align_then_dpo` plus synthetic paraphrase triggers (`trigger_mode: template_paraphrase`), and made rollout sampling **batched** (critical for runtime).
+
+Observed failure mode:
+- The synthetic paraphrases improve coverage of “clean paraphrase” prompts, but they **do not match** CounterFact’s rephrase distribution (often “irrelevant prefix + truncated prompt”), and they don’t match WikiBigEdit’s curated rephrases either. Training on them can therefore **pull probability mass away** from the benchmark rephrase prompts.
+
+### On-policy conflict snapshots for OPA runs
+Computed from the generated on-policy JSONL (mismatch proxy; margins not computed):
+- CounterFact OPA on-policy: `runs/on_counterfact3k_stage2_opa_paraphrase.json` → `trigger_error_rate ≈ 0.504`
+- WikiBigEdit OPA on-policy: `runs/on_wikibigedit3k_stage2_opa_paraphrase.json` → `trigger_error_rate ≈ 0.382`
+
+### Capability / catastrophic forgetting alignment (paper-style)
+The paper reports “Capability” on tasks like GSM8K/MMLU/WMT16. We added a script to run lm-eval-harness:
+- `scripts/eval_general_tasks.py` (default tasks: `mmlu,gsm8k,wmt16-en-de`)
+
+Quick check (MMLU, limit=200, 0-shot; using `lm_eval` outputs under `runs/general_tasks/`):
+- CounterFact base (E0): `mmlu acc ≈ 0.5167`
+- CounterFact OPA stage-2: `mmlu acc ≈ 0.5063`
+
+### Next iteration ideas (highest expected value)
+1) **CounterFact-style rephrase generator**: explicitly synthesize “distractor prefix + prompt tail” triggers (our simple version did not beat the previous SFT-gate; likely needs stronger perturbations and/or multiple prefixes).
+2) **Dataset-aware gate**: add a regime that **skips stage-2** when (a) off-policy success is high and (b) on-policy mismatch is low/medium, to avoid harming strong baselines (notably WikiBigEdit).
+3) **Better editor**: replace `RuleBasedEditor` with a stronger teacher (API/local) to generate *natural* minimal corrections; this is the most likely way to make DPO-style objectives help rather than hurt.

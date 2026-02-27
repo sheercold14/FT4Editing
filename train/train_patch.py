@@ -16,6 +16,7 @@ from data.mixer import MixedBatchSampler
 from losses.objectives import ce_loss, dpo_loss
 from on_policy.conflict_score import compute_conflict_score
 from on_policy.editor_interface import RuleBasedEditor
+from on_policy.paraphrase_generator import generate_paraphrase_triggers
 from on_policy.rollout import rollout
 from on_policy.trigger_generator import generate_triggers
 
@@ -37,6 +38,8 @@ class TrainConfig:
     beta: float = 0.1
     lr: float = 5e-5
     weight_decay: float = 0.0
+    optimizer: str = "adamw"  # "adamw" or "adam"
+    torch_dtype: str = "bf16"  # "bf16", "fp16", "fp32"
     batch_size: int = 4
     num_epochs: int = 1
     steps_per_epoch: int = 200
@@ -50,11 +53,24 @@ class TrainConfig:
     max_refresh_records: int = 200
     conflict_score_mode: str = "mismatch"  # "mismatch" or "full" (logprob margin)
     include_rephrase_triggers: bool = False
+    trigger_mode: str = "template"  # "template" | "template_paraphrase" | "template_distractor"
+    template_triggers: int = 2
+    paraphrase_per_prompt: int = 0
+    paraphrase_gen_cfg: Dict | None = None
+    paraphrase_similarity_threshold: float = 0.92
+    paraphrase_filter_against_rephrase: bool = True
+    distractor_pool_size: int = 2048
+    distractor_prefixes_per_record: int = 1
+    distractor_max_chars: int = 120
     on_objective: str = "dpo"  # for dynamic_gate: "dpo", "sft", or "auto"
     micro_batch_size: int = 0
     early_stop_loss: float | None = None
+    skip_step_loss: float | None = None
     train_layer: int | None = None
     rewrite_module: str = ""
+    # OPA-style schedule
+    opa_align_epochs: int = 0
+    opa_refresh_after_align: bool = True
 
     @classmethod
     def from_yaml(cls, path: str) -> "TrainConfig":
@@ -63,6 +79,13 @@ class TrainConfig:
         data = data or {}
         if "gen_cfg" not in data:
             data["gen_cfg"] = {"temperature": 0.0, "top_p": 1.0, "max_new_tokens": data.get("max_new_tokens", 32)}
+        if "paraphrase_gen_cfg" not in data:
+            data["paraphrase_gen_cfg"] = {
+                "temperature": 0.7,
+                "top_p": 0.95,
+                "max_new_tokens": 64,
+                "batch_size": 16,
+            }
         return cls(**data)
 
 
@@ -92,15 +115,110 @@ def rebuild_on_policy_dataset(
     print(f"[ON] rebuild dataset: records={len(sampled_records)} k={config.k_triggers} mode={config.conflict_score_mode}")
 
     prompt_rows: List[Tuple[int, str]] = []
+    # For counterfact-style rephrase prompts, adding an unrelated prefix often matches evaluation distribution better.
+    distractor_pool: List[str] = []
+    if config.trigger_mode == "template_distractor":
+        seen = set()
+        for rec in sampled_records:
+            cand = (rec.get("locality_prompt") or rec.get("prompt") or rec.get("src") or "").strip()
+            if not cand:
+                continue
+            cand = cand.replace("\n", " ").strip()
+            if len(cand) > int(config.distractor_max_chars):
+                cand = cand[: int(config.distractor_max_chars)].rsplit(" ", 1)[0].strip() or cand[: int(config.distractor_max_chars)]
+            key = cand.lower()
+            if key and key not in seen:
+                distractor_pool.append(cand)
+                seen.add(key)
+            if len(distractor_pool) >= int(config.distractor_pool_size):
+                break
+        if distractor_pool:
+            print(f"[ON] distractor_pool: size={len(distractor_pool)}")
+    base_prompts_by_rec: Dict[int, List[str]] = {}
+    k_template = int(config.k_triggers)
+    if config.trigger_mode == "template_paraphrase":
+        k_template = max(1, min(int(config.template_triggers), int(config.k_triggers)))
     for index, rec in enumerate(sampled_records):
         prompts = generate_triggers(
             rec,
-            config.k_triggers,
+            k_template,
             mode="template",
             include_rephrase=config.include_rephrase_triggers,
         )
+        base_prompts_by_rec[index] = prompts
         for prompt in prompts:
             prompt_rows.append((index, prompt))
+
+    if config.trigger_mode == "template_distractor" and distractor_pool:
+        import random
+
+        rng = random.Random(int(config.seed) + 2026)
+        new_rows: List[Tuple[int, str]] = []
+        for rec_index, base_prompts in base_prompts_by_rec.items():
+            rec = sampled_records[rec_index]
+            prompt = (rec.get("prompt") or rec.get("src") or "").strip()
+            if not prompt:
+                continue
+            prompt_short = " ".join(prompt.split(" ")[:-1]).strip() or prompt
+            keep = list(base_prompts)
+            for _ in range(int(config.distractor_prefixes_per_record)):
+                prefix = rng.choice(distractor_pool)
+                candidates = [
+                    f"{prefix}. {prompt}",
+                    f"{prefix}. {prompt_short}",
+                ]
+                for cand in candidates:
+                    if len(keep) >= int(config.k_triggers):
+                        break
+                    if cand and cand.lower() not in {k.lower() for k in keep}:
+                        keep.append(cand)
+            for p in keep[: int(config.k_triggers)]:
+                new_rows.append((rec_index, p))
+        prompt_rows = new_rows
+
+    if config.trigger_mode == "template_paraphrase" and config.paraphrase_per_prompt > 0:
+        flat_base = [p for _, p in prompt_rows]
+        print(f"[ON] paraphrase: base_prompts={len(flat_base)} per_prompt={int(config.paraphrase_per_prompt)}")
+        # Build a map of protected strings we want to avoid matching too closely (to prevent leakage).
+        protected_by_prompt: Dict[str, List[str]] = {}
+        if config.paraphrase_filter_against_rephrase:
+            # For each base prompt, protect against its record's eval rephrase (if present).
+            for rec_index, prompts in base_prompts_by_rec.items():
+                rec = sampled_records[rec_index]
+                rp = (rec.get("rephrase_prompt") or rec.get("rephrase") or "").strip()
+                if not rp:
+                    continue
+                for p in prompts:
+                    protected_by_prompt.setdefault(p, []).append(rp)
+
+        # Generate paraphrases per base prompt; keep only a few to avoid dataset bloat.
+        paraphrases_grouped = generate_paraphrase_triggers(
+            model=model,
+            tokenizer=tokenizer,
+            prompts=flat_base,
+            per_prompt=int(config.paraphrase_per_prompt),
+            gen_cfg=config.paraphrase_gen_cfg,
+            seed=int(config.seed) + 1337,
+            similarity_threshold=float(config.paraphrase_similarity_threshold),
+            filter_against=protected_by_prompt,
+            forbid_substrings=[],
+        )
+        kept = sum(len(g) for g in paraphrases_grouped)
+        print(f"[ON] paraphrase: kept={kept}")
+        # Append paraphrases, capped by k_triggers per record.
+        new_rows: List[Tuple[int, str]] = []
+        cursor = 0
+        for rec_index, base_prompts in base_prompts_by_rec.items():
+            keep = list(base_prompts)
+            for _ in base_prompts:
+                for cand in paraphrases_grouped[cursor]:
+                    if len(keep) >= int(config.k_triggers):
+                        break
+                    keep.append(cand)
+                cursor += 1
+            for p in keep:
+                new_rows.append((rec_index, p))
+        prompt_rows = new_rows
 
     if not prompt_rows:
         dump_jsonl(config.on_data_path, refreshed)
@@ -167,7 +285,18 @@ def train(config: TrainConfig) -> None:
     if tokenizer.pad_token is None:
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
     tokenizer.padding_side = "left"
-    torch_dtype = torch.bfloat16 if device.type == "cuda" else None
+    if device.type != "cuda":
+        torch_dtype = None
+    else:
+        dt = (config.torch_dtype or "bf16").lower()
+        if dt == "bf16":
+            torch_dtype = torch.bfloat16
+        elif dt == "fp16":
+            torch_dtype = torch.float16
+        elif dt == "fp32":
+            torch_dtype = torch.float32
+        else:
+            raise ValueError(f"Unknown torch_dtype={config.torch_dtype}")
     model = AutoModelForCausalLM.from_pretrained(
         config.model_name_or_path, trust_remote_code=True, torch_dtype=torch_dtype
     ).to(device)
@@ -188,7 +317,7 @@ def train(config: TrainConfig) -> None:
         on_dataset = OnPolicySFTDataset(config.on_data_path, min_conflict=config.min_conflict_for_on)
 
     ref_model = None
-    needs_ref = config.objective in {"online_dpo", "mix_dpo"} or (
+    needs_ref = config.objective in {"online_dpo", "mix_dpo", "opa_align_then_dpo"} or (
         config.objective == "dynamic_gate" and config.on_objective in {"dpo", "auto"}
     )
     if use_on_policy and needs_ref:
@@ -218,13 +347,29 @@ def train(config: TrainConfig) -> None:
             param.requires_grad = True
         trainable_params = list(model.parameters())
 
-    optimizer = torch.optim.AdamW(trainable_params, lr=config.lr, weight_decay=float(config.weight_decay))
+    opt_name = (config.optimizer or "adamw").lower()
+    if opt_name == "adamw":
+        optimizer = torch.optim.AdamW(trainable_params, lr=config.lr, weight_decay=float(config.weight_decay))
+    elif opt_name == "adam":
+        optimizer = torch.optim.Adam(trainable_params, lr=config.lr, weight_decay=float(config.weight_decay))
+    else:
+        raise ValueError(f"Unknown optimizer={config.optimizer}")
     model.train()
     use_amp = False
     scaler = None
 
     for epoch in range(config.num_epochs):
+        is_align_phase = config.objective == "opa_align_then_dpo" and epoch < int(config.opa_align_epochs)
         if use_on_policy and epoch % config.refresh_interval == 0 and epoch > 0:
+            rebuild_on_policy_dataset(config, model, tokenizer, off_records)
+            on_dataset = OnPolicySFTDataset(config.on_data_path, min_conflict=config.min_conflict_for_on)
+        if (
+            config.objective == "opa_align_then_dpo"
+            and int(config.opa_align_epochs) > 0
+            and int(epoch) == int(config.opa_align_epochs)
+            and bool(config.opa_refresh_after_align)
+        ):
+            # Refresh rejected rollouts after alignment so DPO sees current-policy negatives.
             rebuild_on_policy_dataset(config, model, tokenizer, off_records)
             on_dataset = OnPolicySFTDataset(config.on_data_path, min_conflict=config.min_conflict_for_on)
 
@@ -232,10 +377,13 @@ def train(config: TrainConfig) -> None:
             conflict_scores = [float(r.get("conflict_score", 0.0)) for r in on_dataset.records]
         else:
             conflict_scores = []
+        ratio = config.on_ratio if use_on_policy else 0.0
+        if is_align_phase:
+            ratio = 1.0
         sampler = MixedBatchSampler(
             off_size=len(off_dataset),
             on_size=len(on_dataset) if on_dataset is not None else 0,
-            ratio=config.on_ratio if use_on_policy else 0.0,
+            ratio=ratio,
             total_steps=config.steps_per_epoch * config.batch_size,
             seed=config.seed + epoch,
             conflict_scores=conflict_scores if conflict_scores else None,
@@ -273,8 +421,10 @@ def train(config: TrainConfig) -> None:
                     on_prompts = [item["prompt"] for item in on_items]
                     on_chosen = [item["target"] for item in on_items]
                     on_rejected = [item["rejected"] for item in on_items]
-                    use_dpo_on = config.objective in {"online_dpo", "mix_dpo"}
-                    if config.objective == "dynamic_gate":
+                    use_dpo_on = config.objective in {"online_dpo", "mix_dpo", "opa_align_then_dpo"}
+                    if is_align_phase:
+                        use_dpo_on = False
+                    elif config.objective == "dynamic_gate":
                         if config.on_objective == "dpo":
                             use_dpo_on = True
                         elif config.on_objective == "sft":
@@ -304,18 +454,21 @@ def train(config: TrainConfig) -> None:
                 if not losses:
                     continue
 
-                if config.use_dynamic_gate and on_items and conflict is not None:
+                if config.use_dynamic_gate and (not is_align_phase) and on_items and conflict is not None:
                     lambda_on, lambda_off = _gate_lambda(config, float(conflict))
                 else:
                     lambda_on, lambda_off = config.lambda_on, config.lambda_off
 
                 if config.objective == "off_sft":
                     lambda_on, lambda_off = 0.0, 1.0
-                elif config.objective in {"online_sft", "online_dpo", "grpo"} and not config.use_dynamic_gate:
+                elif (config.objective in {"online_sft", "online_dpo", "grpo"} and not config.use_dynamic_gate) or is_align_phase:
                     if config.objective == "online_sft":
                         lambda_on, lambda_off = 1.0, 0.0
                     elif config.objective == "online_dpo":
                         lambda_on, lambda_off = config.lambda_on, config.lambda_off
+                    elif is_align_phase:
+                        # OPA alignment: default to on-policy SFT only (can override by setting lambda_off in config).
+                        lambda_on, lambda_off = 1.0, 0.0
 
                 total_loss = torch.zeros((), device=device)
                 for name, value in losses:
@@ -323,6 +476,9 @@ def train(config: TrainConfig) -> None:
                         total_loss = total_loss + lambda_on * value
                     else:
                         total_loss = total_loss + lambda_off * value
+
+                if config.skip_step_loss is not None and float(total_loss.detach().item()) < float(config.skip_step_loss):
+                    continue
 
                 (total_loss * (len(micro_batch) / total_items)).backward()
                 step_losses.append(float(total_loss.detach().item()))

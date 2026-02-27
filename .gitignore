@@ -12,3 +12,9 @@ reports/
 runs/
 data/generated/
 data/__pycache__/
+
+# Optional external eval toolkits (not tracked)
+third_party/
+
+# Local paper downloads
+papers/

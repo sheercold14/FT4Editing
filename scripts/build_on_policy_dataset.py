@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from data.datasets import OffPolicySFTDataset, RecordMapper, dump_jsonl
 from on_policy.conflict_score import compute_conflict_score
 from on_policy.editor_interface import RuleBasedEditor
+from on_policy.paraphrase_generator import generate_paraphrase_triggers
 from on_policy.rollout import rollout
 from on_policy.trigger_generator import generate_triggers
 
@@ -41,6 +42,10 @@ def main() -> None:
     parser.add_argument("--off_data_path", required=True, type=str)
     parser.add_argument("--output_path", required=True, type=str)
     parser.add_argument("--k", type=int, default=4)
+    parser.add_argument("--trigger_mode", type=str, default="template", choices=["template", "template_paraphrase"])
+    parser.add_argument("--template_triggers", type=int, default=2)
+    parser.add_argument("--paraphrase_per_prompt", type=int, default=0)
+    parser.add_argument("--paraphrase_similarity_threshold", type=float, default=0.92)
     parser.add_argument(
         "--include_rephrase",
         action="store_true",
@@ -130,7 +135,34 @@ def main() -> None:
                     flush=True,
                 )
 
-            prompts = generate_triggers(rec, args.k, include_rephrase=args.include_rephrase)
+            k_template = int(args.k)
+            if args.trigger_mode == "template_paraphrase":
+                k_template = max(1, min(int(args.template_triggers), int(args.k)))
+            prompts = generate_triggers(rec, k_template, include_rephrase=args.include_rephrase)
+            if args.trigger_mode == "template_paraphrase" and args.paraphrase_per_prompt > 0 and prompts:
+                base_prompts = list(prompts)
+                protected = {}
+                if not args.include_rephrase:
+                    rp = (rec.get("rephrase_prompt") or rec.get("rephrase") or "").strip()
+                    if rp:
+                        for p in base_prompts:
+                            protected.setdefault(p, []).append(rp)
+                paraphrases = generate_paraphrase_triggers(
+                    model=model,
+                    tokenizer=tokenizer,
+                    prompts=base_prompts,
+                    per_prompt=int(args.paraphrase_per_prompt),
+                    gen_cfg={"temperature": 0.7, "top_p": 0.95, "max_new_tokens": 64, "batch_size": 16},
+                    seed=int(args.seed) + 1337 + idx,
+                    similarity_threshold=float(args.paraphrase_similarity_threshold),
+                    filter_against=protected,
+                )
+                for base, group in zip(base_prompts, paraphrases):
+                    for cand in group:
+                        if len(prompts) >= int(args.k):
+                            break
+                        if cand.strip():
+                            prompts.append(cand.strip())
             if not prompts:
                 continue
             preds = rollout(
