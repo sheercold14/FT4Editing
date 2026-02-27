@@ -41,6 +41,11 @@ def main() -> None:
     parser.add_argument("--off_data_path", required=True, type=str)
     parser.add_argument("--output_path", required=True, type=str)
     parser.add_argument("--k", type=int, default=4)
+    parser.add_argument(
+        "--include_rephrase",
+        action="store_true",
+        help="Include dataset-provided rephrase prompts as triggers (can leak eval prompts).",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--max_samples", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
@@ -125,7 +130,7 @@ def main() -> None:
                     flush=True,
                 )
 
-            prompts = generate_triggers(rec, args.k)
+            prompts = generate_triggers(rec, args.k, include_rephrase=args.include_rephrase)
             if not prompts:
                 continue
             preds = rollout(

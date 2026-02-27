@@ -1,7 +1,7 @@
 model_name_or_path: "/data/shichao/data/Qwen3-1.7B"
-off_data_path: "./data/zsre/zsre_3k.json"
-on_data_path: "./data/generated/zsre3k_full_on.jsonl"
-save_model_dir: "./saves/zsre3k_full_e0_off_sft"
+off_data_path: "./data/wikibigedit/wikibigedit_3k.json"
+on_data_path: "./data/generated/wikibigedit3k_on.jsonl"
+save_model_dir: "./saves/wikibigedit3k_full_e0_off_sft_bs10"
 
 objective: "off_sft"
 use_dynamic_gate: false
@@ -10,10 +10,11 @@ lambda_off: 1.0
 on_ratio: 0.0
 
 lr: 5.0e-4
-batch_size: 30
-micro_batch_size: 30
+weight_decay: 0.0
+batch_size: 10
+micro_batch_size: 10
 num_epochs: 25
-steps_per_epoch: 100   # 100 * 30 = 3000 samples (one full pass, no replacement)
+steps_per_epoch: 300   # 300 * 10 = 3000 samples (one full pass)
 early_stop_loss: 1.0e-2
 
 refresh_interval: 999
@@ -27,3 +28,4 @@ device: 0
 seed: 42
 train_layer: 6
 rewrite_module: "model.layers.{}.mlp.down_proj.weight"
+

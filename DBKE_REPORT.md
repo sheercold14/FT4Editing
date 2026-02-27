@@ -93,10 +93,19 @@ Results (3000 samples):
 | DBKE E5 (DPO gate) | `./saves/zsre3k_full_e5_dynamic_gate` | 0.9133 | 0.5227 |
 | DBKE E5 (stage-2, SFT gate) | `./saves/zsre3k_stage2_e5_sft_gate` | **0.9960** | **0.6690** |
 
+### Important note: rephrase prompt leakage
+The ZsRE records include a dataset-provided `rephrase` prompt that is used by `eval_edit_metric.py` to measure "generalization".
+If we include these rephrase prompts as **training triggers**, we contaminate the eval set and inflate Rephrase EM.
+
+We fixed this by defaulting triggers to **exclude dataset-provided rephrases** (`include_rephrase_triggers: false`).
+
+Rerun (no leakage) for stage-2 on ZsRE-3k:
+- `./saves/zsre3k_stage2_e5_sft_gate_norephrase`: Reliability **0.9960**, Rephrase **0.5197** (`runs/zsre3k_stage2_e5_sft_gate_norephrase_eval3000_seed0.json`)
+
 ### Takeaway vs research objective
 - Pure off-policy SFT (E0) matches/exceeds baseline reliability, but **does not improve rephrase generalization**.
 - Fixed-mix / gated **on-policy DPO** improves generalization slightly, but **hurts reliability** (trade-off).
-- A **dynamic gate** that uses a **milder on-policy objective (SFT)** in a stage-2 run **beats the repo baseline on both reliability and generalization** on the full 3k set.
+- A **dynamic gate** that uses a **milder on-policy objective (SFT)** in a stage-2 run improves Rephrase EM **without** using dataset-provided rephrase prompts (small but real gain on ZsRE-3k).
 
 ## Interpretation vs research objective
 1) **The system is runnable end-to-end**, and after fixing loss masking, **off-policy edit success is measurable**.

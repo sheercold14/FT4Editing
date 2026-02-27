@@ -13,7 +13,13 @@ def _pick_prompt(edit_record: Dict) -> str:
     ).strip()
 
 
-def generate_triggers(edit_record: Dict, k: int, mode: str = "template") -> List[str]:
+def generate_triggers(
+    edit_record: Dict,
+    k: int,
+    mode: str = "template",
+    *,
+    include_rephrase: bool = False,
+) -> List[str]:
     prompt = _pick_prompt(edit_record)
     subject = edit_record.get("subject", "").strip()
     if not prompt:
@@ -22,10 +28,13 @@ def generate_triggers(edit_record: Dict, k: int, mode: str = "template") -> List
         mode = "template"
 
     variants = [prompt]
-    if edit_record.get("rephrase_prompt"):
-        variants.append(edit_record["rephrase_prompt"].strip())
-    if edit_record.get("rephrase"):
-        variants.append(edit_record["rephrase"].strip())
+    # NOTE: Dataset-provided rephrases are typically used only for *evaluation*.
+    # Including them in training/on-policy triggers can leak eval prompts and inflate "generalization".
+    if include_rephrase:
+        if edit_record.get("rephrase_prompt"):
+            variants.append(edit_record["rephrase_prompt"].strip())
+        if edit_record.get("rephrase"):
+            variants.append(edit_record["rephrase"].strip())
     if subject:
         variants.extend(
             [
@@ -53,4 +62,3 @@ def generate_triggers(edit_record: Dict, k: int, mode: str = "template") -> List
         if len(deduped) >= k:
             break
     return deduped
-

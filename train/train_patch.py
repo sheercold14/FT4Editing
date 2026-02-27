@@ -36,6 +36,7 @@ class TrainConfig:
     on_ratio: float = 0.5
     beta: float = 0.1
     lr: float = 5e-5
+    weight_decay: float = 0.0
     batch_size: int = 4
     num_epochs: int = 1
     steps_per_epoch: int = 200
@@ -48,6 +49,7 @@ class TrainConfig:
     min_conflict_for_on: float = 0.0
     max_refresh_records: int = 200
     conflict_score_mode: str = "mismatch"  # "mismatch" or "full" (logprob margin)
+    include_rephrase_triggers: bool = False
     on_objective: str = "dpo"  # for dynamic_gate: "dpo", "sft", or "auto"
     micro_batch_size: int = 0
     early_stop_loss: float | None = None
@@ -91,7 +93,12 @@ def rebuild_on_policy_dataset(
 
     prompt_rows: List[Tuple[int, str]] = []
     for index, rec in enumerate(sampled_records):
-        prompts = generate_triggers(rec, config.k_triggers, mode="template")
+        prompts = generate_triggers(
+            rec,
+            config.k_triggers,
+            mode="template",
+            include_rephrase=config.include_rephrase_triggers,
+        )
         for prompt in prompts:
             prompt_rows.append((index, prompt))
 
@@ -211,7 +218,7 @@ def train(config: TrainConfig) -> None:
             param.requires_grad = True
         trainable_params = list(model.parameters())
 
-    optimizer = torch.optim.AdamW(trainable_params, lr=config.lr)
+    optimizer = torch.optim.AdamW(trainable_params, lr=config.lr, weight_decay=float(config.weight_decay))
     model.train()
     use_amp = False
     scaler = None

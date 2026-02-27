@@ -1,7 +1,7 @@
 model_name_or_path: "/data/shichao/data/Qwen3-1.7B"
-off_data_path: "./data/zsre/zsre_3k.json"
-on_data_path: "./data/generated/zsre3k_full_on.jsonl"
-save_model_dir: "./saves/zsre3k_full_e0_off_sft"
+off_data_path: "./data/wikibigedit/wikibigedit_3k.json"
+on_data_path: "./data/generated/wikibigedit3k_on.jsonl"
+save_model_dir: "./saves/wikibigedit3k_full_e0_off_sft"
 
 objective: "off_sft"
 use_dynamic_gate: false

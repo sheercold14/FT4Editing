@@ -1,7 +1,7 @@
-model_name_or_path: "./saves/zsre3k_full_e0_off_sft"
-off_data_path: "./data/zsre/zsre_3k.json"
-on_data_path: "./data/generated/zsre3k_stage2_on.jsonl"
-save_model_dir: "./saves/zsre3k_stage2_e5_sft_gate"
+model_name_or_path: "./saves/wikibigedit3k_full_e0_off_sft_bs10"
+off_data_path: "./data/wikibigedit/wikibigedit_3k.json"
+on_data_path: "./data/generated/wikibigedit3k_stage2_bs10_on.jsonl"
+save_model_dir: "./saves/wikibigedit3k_stage2_e5_sft_gate_bs10"
 
 objective: "dynamic_gate"
 use_dynamic_gate: true
@@ -13,10 +13,11 @@ lambda_off: 0.3
 on_ratio: 0.5
 
 lr: 1.0e-4
+weight_decay: 0.0
 batch_size: 30
 micro_batch_size: 30
 num_epochs: 3
-steps_per_epoch: 200   # 200 * 30 = 6000 total samples (expected off ~= 3000)
+steps_per_epoch: 200
 
 refresh_interval: 999
 max_refresh_records: 0
@@ -35,3 +36,4 @@ device: 0
 seed: 42
 train_layer: 6
 rewrite_module: "model.layers.{}.mlp.down_proj.weight"
+

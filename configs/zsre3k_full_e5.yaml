@@ -21,6 +21,7 @@ steps_per_epoch: 334   # 334 * 30 ≈ 10020 total samples
 refresh_interval: 999
 max_refresh_records: 0
 conflict_score_mode: "mismatch"
+include_rephrase_triggers: false
 k_triggers: 4
 beta: 0.1
 
