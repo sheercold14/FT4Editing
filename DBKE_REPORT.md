@@ -222,3 +222,63 @@ WikiBigEdit (paper baseline vs our aligned E0; files: `runs/bucket_eval_wikibige
 If we claim “improves generalization”, we must specify *which generalization*:
 - CounterFact gains are about **robustness under prefix-noise + partial prompt retention**.
 - WikiBigEdit requires **semantic paraphrase invariance**, where our current on-policy/synthetic-trigger ideas are not yet aligned and can hurt.
+
+---
+
+## Multi-dimensional generalization suite (v1, deterministic)
+Motivation: dataset-provided `rephrase_prompt` collapses multiple robustness axes into a single number. To make the “generalization boundary” explicit and scalable, we added a **versioned, deterministic** suite generator that produces multiple controlled transforms per edit.
+
+Artifacts:
+- Generator: `scripts/build_generalization_suite.py`
+- Evaluator (vLLM greedy): `scripts/eval_generalization_suite.py`
+- CounterFact suite v1: `data/eval_generated/counterfact3k_suite_v1.jsonl` (+ meta: `data/eval_generated/counterfact3k_suite_v1.jsonl.meta.json`)
+- WikiBigEdit suite v1: `data/eval_generated/wikibigedit3k_suite_v1.jsonl` (+ meta: `data/eval_generated/wikibigedit3k_suite_v1.jsonl.meta.json`)
+
+Suite v1 transforms (each row is `(prompt, target_new)` with a `transform` tag):
+- `src`: canonical prompt (Reliability baseline; should remain ~1.0).
+- `instr_wrap`: instruction wrapper (tests instruction-following robustness).
+- `chat_wrap`: “User/Assistant” + section headers wrapper (tests chat-format shift).
+- `trunc_drop1`: drop the last word (tests suffix sensitivity; contains metric is often more meaningful here).
+- `prefix_noise`: prepend an unrelated prompt prefix from the dataset (tests prefix-noise robustness).
+- `prefix_noise_trunc`: prefix-noise + `trunc_drop1` (harder; approximates CounterFact’s “distractor+trunc” rephrase morphology).
+- `rule_paraphrase`: deterministic, rule-based lexical rewrite (low/medium semantic paraphrase).
+- `ctx_irrelevant`: add a *locality prompt + its answer* as context before the query (tests context robustness / distraction).
+
+### Results (suite v1)
+All runs use `scripts/eval_generalization_suite.py` (vLLM, greedy, normalized EM + contains). Reports:
+- CounterFact baseline: `runs/suite_counterfact3k_v1_baseline.json`
+- CounterFact stage-2 SFT gate: `runs/suite_counterfact3k_v1_stage2.json`
+- WikiBigEdit baseline: `runs/suite_wikibigedit3k_v1_baseline.json`
+- WikiBigEdit stage-2 SFT gate: `runs/suite_wikibigedit3k_v1_stage2.json`
+
+CounterFact (overall EM / contains):
+- baseline: **0.3943 / 0.4276**
+- stage-2: **0.4516 / 0.4772**
+
+Key CounterFact deltas by transform (EM; baseline → stage-2):
+- `src`: 0.9980 → 0.9977 (flat, expected)
+- `instr_wrap`: 0.5758 → **0.7526** (large gain)
+- `prefix_noise`: 0.2563 → 0.2727 (small gain)
+- `prefix_noise_trunc`: 0.1440 → 0.1462 (flat; contains *drops* 0.1718 → 0.1625)
+- `chat_wrap`: 0.0638 → 0.0415 (regression)
+- `trunc_drop1`: EM flat-ish, but contains drops 0.5233 → 0.4723 (regression)
+
+WikiBigEdit (overall EM / contains):
+- baseline: **0.5914 / 0.6851**
+- stage-2: **0.6003 / 0.6693**
+
+Key WikiBigEdit deltas by transform (EM; baseline → stage-2):
+- `chat_wrap`: 0.1668 → **0.3145** (large gain)
+- `trunc_drop1`: 0.0927 → **0.1867** (EM gain but contains drops 0.6997 → 0.5203)
+- `ctx_irrelevant`: 0.5991 → **0.4860** (large regression)
+- `instr_wrap`: 0.9273 → 0.9038 (regression)
+- `prefix_noise`: 0.6067 → 0.5490 (regression)
+- `rule_paraphrase`: 0.8968 → 0.7869 (regression)
+
+### Interpretation (what this reveals about “generalization” space)
+The suite makes two failure modes visible that are hidden by a single “Rephrase EM”:
+1) **Instruction-format vs semantic paraphrase are different axes.** Our stage-2 strongly improves `instr_wrap` (CounterFact) and `chat_wrap` (WikiBigEdit) but can *hurt* `rule_paraphrase` and `prefix_noise`.
+2) **Context injection is a separate robustness axis.** On WikiBigEdit, stage-2 harms `ctx_irrelevant` substantially, suggesting the model is becoming more sensitive to nearby unrelated QA/context (a locality-adjacent side effect), even when src reliability stays high.
+
+Practical consequence for “top-tier insight” framing:
+- Knowledge editing “generalization” should be reported as a **vector** over transform axes (semantic invariance, prefix robustness, truncation tolerance, formatting shift, context sensitivity), not a scalar tied to a dataset’s idiosyncratic rephrase construction.
