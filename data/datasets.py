@@ -5,7 +5,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from torch.utils.data import Dataset
+try:
+    from torch.utils.data import Dataset
+except Exception:  # pragma: no cover
+    # Allows lightweight scripts (e.g., suite generation) to run without torch.
+    class Dataset:  # type: ignore
+        pass
 
 
 def _read_json(path: str) -> List[Dict]:

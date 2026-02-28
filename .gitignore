@@ -11,6 +11,7 @@ logs/
 reports/
 runs/
 data/generated/
+data/eval_generated/
 data/__pycache__/
 
 # Optional external eval toolkits (not tracked)
