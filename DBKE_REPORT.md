@@ -282,3 +282,16 @@ The suite makes two failure modes visible that are hidden by a single “Rephras
 
 Practical consequence for “top-tier insight” framing:
 - Knowledge editing “generalization” should be reported as a **vector** over transform axes (semantic invariance, prefix robustness, truncation tolerance, formatting shift, context sensitivity), not a scalar tied to a dataset’s idiosyncratic rephrase construction.
+
+---
+
+## 2025–2026 multi-hop KE: collision risks + opportunity
+We did a quick scan of recent multi-hop KE work to avoid “benchmark illusion” / “already solved” collisions and to understand how the field is framing generalization beyond single-hop paraphrases:
+
+- **MQuAKE-Remastered (ICLR 2025 Spotlight)**: audits the widely-used MQuAKE benchmark and reports substantial label/question corruption; argues that MHKE progress needs reliable evaluation, and that some methods overfit dataset idiosyncrasies.
+- **ACE (arXiv 2025-10)**: targets MHKE failures by identifying/editing query-value neuron pathways for implicit intermediate subjects during multi-hop reasoning.
+- **Reason-KE (arXiv 2025-09)**: proposes an explicit reasoning-chain editing approach trained for distractor-resilient multi-hop QA (MQuAKE-CF).
+- **IRAKE (EMNLP 2025 Findings)**: diagnoses “edit skipping” in retrieval/memory-based KE for multi-hop QA and proposes guided decomposition to mitigate it.
+
+Implication for our direction:
+- The community is actively moving from “single-hop paraphrase generalization” toward **multi-hop propagation** and **robust evaluation**. Our proposed contribution should therefore make the generalization boundary explicit *and* connect it to multi-hop failure modes (e.g., context injection and prefix-noise are single-hop proxies for the kind of distractor/context sensitivity that breaks MHKE).
