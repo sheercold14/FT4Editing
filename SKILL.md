@@ -40,6 +40,18 @@
 - `CUDA_VISIBLE_DEVICES=0 python scripts/eval_generalization_suite.py --suite_path data/eval_generated/counterfact3k_suite_v1.jsonl --model_path saves/baseline_qwen3_counterfact3k --tp_size 1 --max_tokens 16 --output_path runs/suite_counterfact3k_v1_baseline.json`
 - `CUDA_VISIBLE_DEVICES=1 python scripts/eval_generalization_suite.py --suite_path data/eval_generated/counterfact3k_suite_v1.jsonl --model_path saves/counterfact3k_stage2_e5_sft_gate --tp_size 1 --max_tokens 16 --output_path runs/suite_counterfact3k_v1_stage2.json`
 
+## 1.3) suite 对齐的 on-policy trigger（用于修复某些泛化 failure mode）
+当你观察到 stage-2 在某些 transform（尤其 `ctx_irrelevant` / `prefix_noise` / `chat_wrap`）上退化时，往往是 **on-policy trigger 分布不覆盖该 failure mode**。我们在 `train/train_patch.py` 增加了：
+- `trigger_mode: suite_v1`：生成包含 `chat_wrap`、`ctx_irrelevant`、`prefix_noise(+trunc)`、轻量 `rule_paraphrase`、截断等的确定性 triggers，用于 stage-2 的 on-policy rebuild。
+
+已跑通 configs（从 repo baseline checkpoint 继续训 1 epoch）：
+- WikiBigEdit：`.worktrees/dbke/configs/wikibigedit3k_stage2_e5_sft_suitev1_from_baseline.yaml`
+- CounterFact：`.worktrees/dbke/configs/counterfact3k_stage2_e5_sft_suitev1_from_baseline.yaml`
+
+运行示例：
+- `python -m train.train_patch --config_path configs/wikibigedit3k_stage2_e5_sft_suitev1_from_baseline.yaml`
+- `python -m train.train_patch --config_path configs/counterfact3k_stage2_e5_sft_suitev1_from_baseline.yaml`
+
 ## 1.1) 关键成功经验（ZsRE-3k 已验证有效）
 结论先行：把训练/评测对齐到仓库论文设置后，我们的 DBKE 能把 Reliability/Src EM 做到和 baseline 同量级；但 **Generalization/Rephrase EM 必须做“去泄漏（no-leak）检查”**，否则很容易被训练数据污染而“虚高”（尤其当 on-policy triggers 直接包含数据集自带 `rephrase_prompt`/`rephrase` 时）。
 
