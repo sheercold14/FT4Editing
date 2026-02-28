@@ -56,8 +56,11 @@ def run_vllm_generate(model_path: str, prompts: List[str], *, tp_size: int, max_
     from vllm import LLM, SamplingParams
     from transformers import AutoTokenizer
 
-    llm = LLM(model=model_path, tensor_parallel_size=tp_size, trust_remote_code=True)
-    tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+    mp = str(Path(model_path).expanduser())
+    if Path(mp).exists():
+        mp = str(Path(mp).resolve())
+    llm = LLM(model=mp, tensor_parallel_size=tp_size, trust_remote_code=True)
+    tokenizer = AutoTokenizer.from_pretrained(mp, trust_remote_code=True)
     sampling_params = SamplingParams(
         temperature=0,
         max_tokens=max_tokens,
