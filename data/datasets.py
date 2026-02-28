@@ -38,6 +38,8 @@ class RecordMapper:
     target_key_candidates: tuple = ("target_new", "alt")
     rephrase_key_candidates: tuple = ("rephrase_prompt", "rephrase")
     negative_key_candidates: tuple = ("target_old", "pred", "ground_truth")
+    locality_prompt_key_candidates: tuple = ("locality_prompt", "loc")
+    locality_ground_truth_key_candidates: tuple = ("locality_ground_truth", "loc_ans")
 
     def pick(self, record: Dict, keys: tuple, default: str = "") -> str:
         for key in keys:
@@ -52,12 +54,16 @@ class RecordMapper:
         target = self.pick(record, self.target_key_candidates)
         rephrase = self.pick(record, self.rephrase_key_candidates)
         rejected = self.pick(record, self.negative_key_candidates)
+        locality_prompt = self.pick(record, self.locality_prompt_key_candidates)
+        locality_ground_truth = self.pick(record, self.locality_ground_truth_key_candidates)
         return {
             **record,
             "prompt": prompt,
             "target_new": target,
             "rephrase_prompt": rephrase,
             "rejected": rejected,
+            "locality_prompt": locality_prompt,
+            "locality_ground_truth": locality_ground_truth,
         }
 
 
