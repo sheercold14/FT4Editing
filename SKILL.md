@@ -180,6 +180,15 @@ LocFT-BF 论文（ICLR 2026 / arXiv:2509.22072）在 Appendix A.1.4 中用 **lm-
 Repo README 也推荐用 lm-evaluation-harness 做 general task eval；对齐时请明确记录：
 - 任务集合、few-shot 数、解码/停止条件、是否抽样策略、以及用的 checkpoint（pre-edit / post-edit）。
 
+**落地脚本与报告（dbke worktree）**
+- Runner：`.worktrees/dbke/scripts/eval_general_tasks.py`（会在 `runs/locality_general_tasks/` 写 `meta_*.json` + `*.log` + 结果 `*_TIMESTAMP.json`）
+- 汇总：`.worktrees/dbke/scripts/summarize_locality_results.py`
+- 当前 quick-run 报告（`--limit 10`，用于 smoke/趋势）：`.worktrees/dbke/DBKE_LOCALITY_REPORT.md`
+
+**常见坑**
+- `lm-eval==0.4.3` 与 `datasets==4.x` 不兼容（会报 `trust_remote_code` 不支持），需要在 `ftedit` 里升级到 `lm-eval>=0.4.11`。
+- vLLM 跑 MMLU/loglikelihood 很吃显存：`batch_size=30` + `gpu_memory_utilization=0.90` 容易 OOM；建议 `batch_size=16`，并把 `gpu_memory_utilization` 降到 `0.80`（dbke 脚本默认）。
+
 ## 9) CounterFact “旧答案”字段坑：`ground_truth`
 CounterFact 数据里旧答案通常存放在 `ground_truth`（而不是 `target_old`/`pred`），这会导致：
 - on-policy DPO 的 rejected/旧答案回潮评测拿不到 old target（指标看起来“0.0”，其实是字段没读到）。
