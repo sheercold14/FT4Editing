@@ -174,6 +174,125 @@ def rebuild_on_policy_dataset(
             return False
         return SequenceMatcher(a=a, b=b).ratio() >= float(config.filter_against_eval_rephrase_threshold)
 
+    def _drop_last_word(text: str) -> str:
+        toks = [t for t in (text or "").replace("\n", " ").strip().split(" ") if t]
+        if len(toks) <= 1:
+            return ""
+        return " ".join(toks[:-1]).strip()
+
+    def _rule_paraphrase(prompt: str, rec: Dict) -> str:
+        p = (prompt or "").strip()
+        if not p:
+            return ""
+        subj = (rec.get("subject") or "").strip()
+        if not p.endswith("?"):
+            # CounterFact-like completion prompt.
+            if subj and p.lower().startswith(subj.lower()):
+                tail = p[len(subj) :].strip()
+                for a, b in [(" is in", " is located in"), (" is in", " can be found in")]:
+                    cand = f"{subj} {tail}".replace(a, b).strip()
+                    if cand and cand.lower() != p.lower():
+                        return cand
+            cand = p.replace(" is in", " is located in").strip()
+            return "" if cand.lower() == p.lower() else cand
+
+        # WikiBigEdit-like question prompt.
+        cand = p
+        cand = cand.replace("traditional geographical division", "traditional region")
+        cand = cand.replace("In which", "Which")
+        cand = cand.replace(" is located", " can be found")
+        cand = cand.replace("historic county", "historical county")
+        cand = " ".join(cand.split())
+        return "" if cand.lower() == p.lower() else cand
+
+    def _chat_wraps(prompt: str) -> List[str]:
+        p = " ".join((prompt or "").strip().split())
+        if not p:
+            return []
+        return [f"User: {p}\nAssistant:", f"### Question:\n{p}\n### Answer:"]
+
+    def _ctx_irrelevant(prompt: str, rec: Dict) -> str:
+        p = " ".join((prompt or "").strip().split())
+        lp = " ".join(str(rec.get("locality_prompt") or "").strip().split())
+        la = " ".join(str(rec.get("locality_ground_truth") or "").strip().split())
+        if not (p and lp and la):
+            return ""
+        return f"Context: {lp} Answer: {la}. {p}"
+
+    if config.trigger_mode == "suite_v1":
+        # A deterministic suite-inspired trigger set: chat-format, context injection, truncation, prefix-noise, rule paraphrase.
+        import random
+
+        rng = random.Random(int(config.seed) + 20260)
+        # Build distractor pool (prefix-noise) from locality prompts/prompts.
+        local_pool: List[str] = []
+        seen = set()
+        for rec in sampled_records:
+            cand = (rec.get("locality_prompt") or rec.get("prompt") or rec.get("src") or "").strip()
+            cand = cand.replace("\n", " ").strip()
+            if not cand:
+                continue
+            if len(cand) > int(config.distractor_max_chars):
+                cand = cand[: int(config.distractor_max_chars)].rsplit(" ", 1)[0].strip() or cand[: int(config.distractor_max_chars)]
+            key = cand.lower()
+            if key and key not in seen:
+                local_pool.append(cand)
+                seen.add(key)
+            if len(local_pool) >= int(config.distractor_pool_size):
+                break
+        if local_pool:
+            print(f"[ON] suite_v1: distractor_pool size={len(local_pool)}")
+
+        new_rows: List[Tuple[int, str]] = []
+        for rec_index, rec in enumerate(sampled_records):
+            prompt = (rec.get("prompt") or rec.get("src") or "").strip()
+            if not prompt:
+                continue
+            base = " ".join(prompt.split())
+            trunc = _drop_last_word(base) or base
+
+            keep: List[str] = []
+            # Start with a few template triggers (instruction wrappers, subject prefix).
+            keep.extend(
+                generate_triggers(
+                    rec,
+                    max(1, min(int(config.template_triggers), int(config.k_triggers))),
+                    mode="template",
+                    include_rephrase=False,
+                )
+            )
+            # Chat-format wrappers.
+            for cand in _chat_wraps(base):
+                if len(keep) >= int(config.k_triggers):
+                    break
+                if cand and (not _too_similar_to_eval(cand, rec)) and cand.lower() not in {k.lower() for k in keep}:
+                    keep.append(cand)
+            # Irrelevant context injection (locality QA as context).
+            cand = _ctx_irrelevant(base, rec)
+            if cand and len(keep) < int(config.k_triggers):
+                if (not _too_similar_to_eval(cand, rec)) and cand.lower() not in {k.lower() for k in keep}:
+                    keep.append(cand)
+            # Prefix-noise + trunc variants.
+            if local_pool:
+                prefix = rng.choice(local_pool)
+                for cand in [f"{prefix}. {base}", f"{prefix}. {trunc}"]:
+                    if len(keep) >= int(config.k_triggers):
+                        break
+                    if cand and (not _too_similar_to_eval(cand, rec)) and cand.lower() not in {k.lower() for k in keep}:
+                        keep.append(cand)
+            # Truncation and rule paraphrase as last resort fillers.
+            if len(keep) < int(config.k_triggers):
+                if trunc and (not _too_similar_to_eval(trunc, rec)) and trunc.lower() not in {k.lower() for k in keep}:
+                    keep.append(trunc)
+            if len(keep) < int(config.k_triggers):
+                rp = _rule_paraphrase(base, rec)
+                if rp and (not _too_similar_to_eval(rp, rec)) and rp.lower() not in {k.lower() for k in keep}:
+                    keep.append(rp)
+
+            for p in keep[: int(config.k_triggers)]:
+                new_rows.append((rec_index, p))
+        prompt_rows = new_rows
+
     if config.trigger_mode in {"template_distractor", "bucket_mix"} and distractor_pool:
         import random
 
