@@ -52,6 +52,13 @@
 - `python -m train.train_patch --config_path configs/wikibigedit3k_stage2_e5_sft_suitev1_from_baseline.yaml`
 - `python -m train.train_patch --config_path configs/counterfact3k_stage2_e5_sft_suitev1_from_baseline.yaml`
 
+## 1.4) 三个数据集的完整性能汇总（推荐先看这个）
+在 DBKE worktree 下维护了一个可直接引用的性能报告（包含 repo 主指标 + suite v1 多维泛化轴）：
+- `.worktrees/dbke/DBKE_PERF_REPORT.md`
+
+其中 ZsRE 主结论建议使用 **no-leak** checkpoint（避免把数据集自带 `rephrase` 泄漏进 on-policy triggers）：
+- `saves/zsre3k_stage2_e5_sft_gate_norephrase`（对应主指标文件：`runs/zsre3k_stage2_e5_sft_gate_norephrase_eval3000_seed0.json`）
+
 ## 1.1) 关键成功经验（ZsRE-3k 已验证有效）
 结论先行：把训练/评测对齐到仓库论文设置后，我们的 DBKE 能把 Reliability/Src EM 做到和 baseline 同量级；但 **Generalization/Rephrase EM 必须做“去泄漏（no-leak）检查”**，否则很容易被训练数据污染而“虚高”（尤其当 on-policy triggers 直接包含数据集自带 `rephrase_prompt`/`rephrase` 时）。
 
