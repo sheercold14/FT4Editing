@@ -2,6 +2,13 @@
 
 适用目录：`/data/shichao/FT4Editing`（以及该 repo 的各个 `git worktree`）。
 
+## 0) 环境（必须）
+本项目的训练/评测脚本依赖 `ftedit` 环境（torch/vllm 等）。推荐使用：
+- `source "$(conda info --base)/etc/profile.d/conda.sh" && conda activate ftedit`
+
+如果你的 shell 没有初始化 conda（会报 `CondaError: Run 'conda init' before 'conda activate'`），就必须先 `source .../conda.sh`（上面这条就是最稳的一条）。另一个等价替代是：
+- `conda run -n ftedit <command>`
+
 ## 1) 现有 DBKE 实验目标（dbke worktree 已实现）
 目标：做一个**纯 fine-tuning、batchwise** 的知识编辑原型，按编辑项的冲突程度在 **on-policy** 与 **off-policy** 更新之间做动态选择（Dynamic Gate），以降低 on-policy 冲突，同时保持 off-policy 的编辑成功率与 locality。
 
@@ -16,7 +23,22 @@
 - 评测：
   - Off-policy：`python -m eval.off_policy_eval ...`（edit_success + locality）
   - On-policy：`python -m eval.on_policy_eval ...`（trigger_error_rate + conflict_mass）
-  - 论文/仓库主指标：`eval_edit_metric.py`（vLLM greedy，输出 Reliability(Src) EM / Generalization(Rephrase) EM）
+- 论文/仓库主指标：`eval_edit_metric.py`（vLLM greedy，输出 Reliability(Src) EM / Generalization(Rephrase) EM）
+
+## 1.2) 多维度泛化评测套件（Generalization Suite, v1）
+目的：把“Rephrase 泛化”拆成多个可控轴（格式变化/前缀噪声/截断/轻量同义改写/上下文干扰），避免单一 `rephrase_prompt` 指标混合多个 failure mode。
+
+实现（worktree：`/data/shichao/FT4Editing/.worktrees/dbke`）：
+- 生成：`scripts/build_generalization_suite.py`（确定性、带 `.meta.json`）
+- 评测：`scripts/eval_generalization_suite.py`（vLLM greedy，输出 overall + per-transform EM/contains）
+
+生成示例（v1 会自动开启 `chat_wrap/rule_paraphrase/ctx_*`）：
+- `python scripts/build_generalization_suite.py --data_path data/counterfact/counterfact_3k.json --output_path data/eval_generated/counterfact3k_suite_v1.jsonl --suite_version v1 --seed 0 --per_edit_max 12 --prefix_noise --prefix_noise_trunc --trunc`
+- `python scripts/build_generalization_suite.py --data_path data/wikibigedit/wikibigedit_3k.json --output_path data/eval_generated/wikibigedit3k_suite_v1.jsonl --suite_version v1 --seed 0 --per_edit_max 12 --prefix_noise --prefix_noise_trunc --trunc`
+
+评测示例（baseline vs stage2）：
+- `CUDA_VISIBLE_DEVICES=0 python scripts/eval_generalization_suite.py --suite_path data/eval_generated/counterfact3k_suite_v1.jsonl --model_path saves/baseline_qwen3_counterfact3k --tp_size 1 --max_tokens 16 --output_path runs/suite_counterfact3k_v1_baseline.json`
+- `CUDA_VISIBLE_DEVICES=1 python scripts/eval_generalization_suite.py --suite_path data/eval_generated/counterfact3k_suite_v1.jsonl --model_path saves/counterfact3k_stage2_e5_sft_gate --tp_size 1 --max_tokens 16 --output_path runs/suite_counterfact3k_v1_stage2.json`
 
 ## 1.1) 关键成功经验（ZsRE-3k 已验证有效）
 结论先行：把训练/评测对齐到仓库论文设置后，我们的 DBKE 能把 Reliability/Src EM 做到和 baseline 同量级；但 **Generalization/Rephrase EM 必须做“去泄漏（no-leak）检查”**，否则很容易被训练数据污染而“虚高”（尤其当 on-policy triggers 直接包含数据集自带 `rephrase_prompt`/`rephrase` 时）。
@@ -116,3 +138,75 @@
 - 加 locality 约束：对 ref 模型 KL / RPO 类正则（轻量、可控）
 - 参数范数控制（Norm Anchoring）：对可训练参数加 `norm_anchor_lambda`，约束参数 L2 norm 不漂移（适合长序列编辑稳定性）
 - 动态策略更细：按样本 conflict 做 reweight / curriculum（而不是 batch 平均）
+
+## 7) DPO 在高冲突场景的“学不动”与 OPA-style 规避
+经验结论（可直接指导 gate 设计）：
+- **高冲突**：优先 off-policy SFT 硬写入（保证 Reliability/写入成功），on-policy 只做轻量对齐或直接关闭。
+- **低冲突**：用 on-policy DPO 做 edge editing（把触发分布往正确行为拉近，副作用更小）。
+- **中冲突**：OPA-style（先对齐再偏好）——先用少量 on-policy SFT 把 `y_edit` 拉进高概率区域，再做 on-policy DPO（否则 DPO 往往因概率比值/参考策略约束进入饱和区间，观测上“很难动”）。
+
+落地方式（dbke-2026 worktree 已支持）：
+- `on_objective: opa`：对同一批 on-policy 样本联合优化 `CE(x_on, y_edit)` + `DPO(x_on, chosen=y_edit, rejected=y_hat)`（系数：`opa_sft_coef` / `opa_dpo_coef`）。
+- `opa_warmup_steps > 0`：前 N 个 optimizer step 强制 on-policy 走 SFT（避免 DPO 一上来就饱和）。
+- 推荐默认调度：`low -> dpo`、`mid -> opa`、`high -> none/off-only`（高冲突只靠 off-policy）。
+
+## 8) Capability / 遗忘评测对齐（baseline 论文设置）
+LocFT-BF 论文（ICLR 2026 / arXiv:2509.22072）在 Appendix A.1.4 中用 **lm-evaluation-harness** 替代传统 locality，评测任务为：
+- MMLU（每个 subject 抽 500，合计 28,500）
+- Natural Questions（test 3,610）
+- SST2（test）
+- WMT16 de-en（test）
+- GSM8K（test 1,319）
+
+Repo README 也推荐用 lm-evaluation-harness 做 general task eval；对齐时请明确记录：
+- 任务集合、few-shot 数、解码/停止条件、是否抽样策略、以及用的 checkpoint（pre-edit / post-edit）。
+
+## 9) CounterFact “旧答案”字段坑：`ground_truth`
+CounterFact 数据里旧答案通常存放在 `ground_truth`（而不是 `target_old`/`pred`），这会导致：
+- on-policy DPO 的 rejected/旧答案回潮评测拿不到 old target（指标看起来“0.0”，其实是字段没读到）。
+
+规避/修复：
+- 构造/评测时 old answer 优先取：`target_old` → `pred` → `ground_truth`。
+- 我们已在 dbke-2026 的 `eval/resurgence_eval.py` 修复该读取逻辑；跑 CounterFact 时务必确认旧答案字段命中。
+
+## 10) Stage-2 训练被 SIGTERM 的规避：增加周期性 stdout
+在某些环境里，长训练如果长时间没有 stdout 输出，可能会被外部 watchdog/环境终止（表现为 exit code 143 / “Terminated”）。
+
+规避：
+- 在 dbke-2026 的 `train/train_patch.py` 中加入 `log_every_steps`（默认 50）step-level 打印，确保 stage-2 训练过程持续有输出（也方便 debug gate 的冲突分布）。
+
+## 11) 无泄漏的“评测分布逼近”：model paraphrase triggers（CounterFact 实测有效）
+CounterFact 的 rephrase prompt 往往是“语义改写 + 无关前缀”，只用模板/前缀很难覆盖，因此 stage-2 很容易看不到提升。
+
+可行做法（避免泄漏 dataset 自带 rephrase）：
+- 用当前 checkpoint 自己生成 paraphrase（只改问法，不回答；保持 subject/entity 不变）
+- 过滤：
+  - paraphrase 里不能包含 `target_new`（避免把答案写进 prompt）
+  - 不能与评测 `rephrase_prompt` 完全相同（严格避免 contamination；近重复可做额外筛选）
+
+dbke-2026 已支持：
+- `scripts/build_on_policy_dataset.py --add_model_paraphrase --trigger_mode template+counterfact`
+- 对应 stage-2 runner：`scripts/run_stage2_ablation.sh --add_model_paraphrase 1 --k 6 --max_samples 3000`
+
+现象（CounterFact-3k, Qwen3-1.7B）：
+- 仅扩大 on-policy 覆盖（3k records）能带来小幅 no-leak rephrase 提升；
+- 再加入 model paraphrase 能进一步提升 no-leak rephrase，并保持 `unseen_rephrase_frac=1.0`（见 `/.worktrees/dbke-2026/DBKE_2026_REPORT.md`）。
+
+## 12) CounterFact 的“提升太小”时，优先做 tuning-location sweep（train_layer）
+经验结论：在 CounterFact 上，与其继续叠加更复杂的 gate/触发分布，**tuning location（训练哪一层）**更像是“杠杆位点”。
+
+已验证（stage-2，Qwen3-1.7B，CounterFact-3k，使用同一份 on-policy 数据 `cf_s2_big_para_stage2_on.jsonl`）：
+- `train_layer=6`（原先 best）：rephrase EM `0.1737`（no-leak `0.1740`）
+- `train_layer=3`：rephrase EM `0.1783`（no-leak `0.1773`，old_contains `0.0367`）
+- `train_layer=9`：rephrase EM `0.1620`（基本无收益）
+
+可复现配置文件（worktree：`/data/shichao/FT4Editing/.worktrees/dbke-2026`）：
+- `configs/generated/cf_s2_big_para_L3_stage2.yaml`
+- `configs/generated/cf_s2_big_para_L9_stage2.yaml`
+
+## 13) YAML 数值坑（`1e-4` 被解析成字符串）
+症状：训练在创建 optimizer 时崩溃（`TypeError: '<=' not supported between instances of 'float' and 'str'`），常见于 YAML 里写 `lr: 1e-4`。
+
+规避：
+- 在 config 里写成 `lr: 1.0e-4` 或 `lr: 0.0001`（更稳）
+- 我们已在 dbke-2026 的 `train/train_patch.py` 的 `TrainConfig.from_yaml` 增加了类型归一化：会把字符串形式的数值（如 `\"1e-4\"`）自动 `float()`/`int()` 转换后再构建 config。
