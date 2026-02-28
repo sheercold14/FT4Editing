@@ -16,6 +16,7 @@ data/__pycache__/
 
 # Optional external eval toolkits (not tracked)
 third_party/
+external/
 
 # Local paper downloads
 papers/

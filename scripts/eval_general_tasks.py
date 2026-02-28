@@ -42,7 +42,8 @@ def run_lm_eval(
     model_args_parts = [f"pretrained={model_path}"]
     if backend == "vllm":
         model_args_parts.append(f"tensor_parallel_size={tp_size}")
-        model_args_parts.append(f"gpu_memory_utilization=0.90")
+        if "gpu_memory_utilization=" not in extra_model_args:
+            model_args_parts.append("gpu_memory_utilization=0.80")
         model_args_parts.append("trust_remote_code=True")
     elif backend == "hf":
         model_args_parts.append("trust_remote_code=True")
@@ -71,15 +72,38 @@ def run_lm_eval(
     if limit is not None:
         cmd += ["--limit", str(limit)]
 
-    proc = subprocess.run(cmd, check=False, text=True, capture_output=True)
+    out_path = Path(output_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path = f"{output_path}.log"
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "w", encoding="utf-8") as log_handle:
+        env = dict(os.environ)
+        env.setdefault("PYTHONUNBUFFERED", "1")
+        proc = subprocess.run(cmd, check=False, text=True, stdout=log_handle, stderr=log_handle, env=env)
     result = {
         "cmd": cmd,
+        "log_path": log_path,
         "returncode": proc.returncode,
-        "stdout_tail": proc.stdout[-4000:],
-        "stderr_tail": proc.stderr[-4000:],
     }
     if proc.returncode != 0:
-        raise RuntimeError(f"lm_eval failed (rc={proc.returncode}). Stderr tail:\n{result['stderr_tail']}")
+        log_tail = ""
+        try:
+            with open(log_path, "r", encoding="utf-8") as handle:
+                log_tail = handle.read()[-4000:]
+        except Exception:  # noqa: BLE001
+            log_tail = f"(failed to read log at {log_path})"
+        raise RuntimeError(f"lm_eval failed (rc={proc.returncode}). Log tail:\n{log_tail}")
+
+    # lm-eval-harness may append a timestamp suffix to output_path. Record the actual path(s) created.
+    stem = out_path.stem
+    created_json = sorted(out_path.parent.glob(f"{stem}_*.json"), key=lambda p: p.stat().st_mtime)
+    created_jsonl = sorted(out_path.parent.glob(f"{stem}_*.jsonl"), key=lambda p: p.stat().st_mtime)
+    if created_json:
+        result["result_json_path"] = str(created_json[-1])
+    elif out_path.exists():
+        result["result_json_path"] = str(out_path)
+    if created_jsonl:
+        result["result_jsonl_path"] = str(created_jsonl[-1])
     return result
 
 
