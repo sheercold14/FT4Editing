@@ -151,11 +151,14 @@ def rebuild_on_policy_dataset(
     k_template = int(config.k_triggers)
     if config.trigger_mode == "template_paraphrase":
         k_template = max(1, min(int(config.template_triggers), int(config.k_triggers)))
+    base_mode = "template"
+    if str(config.trigger_mode or "") == "ched":
+        base_mode = "ched"
     for index, rec in enumerate(sampled_records):
         prompts = generate_triggers(
             rec,
             k_template,
-            mode="template",
+            mode=base_mode,
             include_rephrase=config.include_rephrase_triggers,
         )
         base_prompts_by_rec[index] = prompts
