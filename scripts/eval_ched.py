@@ -67,7 +67,7 @@ def run_vllm_generate(model_path: str, prompts: List[str], *, tp_size: int, max_
     return [o.outputs[0].text for o in outputs]
 
 
-def build_family_prompts(rec: Dict, *, per_family_k: int) -> List[Tuple[str, str]]:
+def build_family_prompts(rec: Dict, *, per_family_k: int, ctx_offset: int = 0) -> List[Tuple[str, str]]:
     """
     Returns (family, prompt) pairs.
     CHED expects context prefixes in families like SBJ / OBJ_OLD / OBJ_NEW and their hop variants.
@@ -86,7 +86,8 @@ def build_family_prompts(rec: Dict, *, per_family_k: int) -> List[Tuple[str, str
     def add_ctx(family: str, ctx_list_key: str) -> None:
         ctxs = rec.get(ctx_list_key) or []
         added = 0
-        for s in ctxs:
+        start = max(0, int(ctx_offset))
+        for s in ctxs[start:]:
             if added >= int(per_family_k):
                 break
             s = _ws(s)
@@ -133,6 +134,12 @@ def main() -> None:
     parser.add_argument("--tp_size", type=int, default=1)
     parser.add_argument("--max_tokens", type=int, default=16)
     parser.add_argument("--per_family_k", type=int, default=2)
+    parser.add_argument(
+        "--ctx_offset",
+        type=int,
+        default=0,
+        help="Use context sentences starting from this offset within each family list (for holdout eval).",
+    )
     parser.add_argument("--max_records", type=int, default=0, help="0 = all")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--cuda", type=str, default="")
@@ -157,7 +164,11 @@ def main() -> None:
         target_old = _ws(rec.get("target_old", ""))
         if not (target_new and rec.get("prompt")):
             continue
-        for family, prompt in build_family_prompts(rec, per_family_k=int(args.per_family_k)):
+        for family, prompt in build_family_prompts(
+            rec,
+            per_family_k=int(args.per_family_k),
+            ctx_offset=int(args.ctx_offset),
+        ):
             family_pairs.append((family, ridx, prompt, target_new, target_old))
 
     prompts = [p[2] for p in family_pairs]
@@ -189,6 +200,7 @@ def main() -> None:
         "data_path": args.data_path,
         "model_path": args.model_path,
         "per_family_k": int(args.per_family_k),
+        "ctx_offset": int(args.ctx_offset),
         "max_records": int(args.max_records),
         "overall": overall.to_dict(),
         "by_family": {k: by_family[k].to_dict() for k in sorted(by_family.keys())},
@@ -204,4 +216,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
