@@ -8,10 +8,9 @@ task: wmt16-de-en-bleu
 dataset_path: wmt/wmt16
 dataset_name: de-en
 doc_to_target: ' {{translation["en"]}}'
-doc_to_text: |
-  German phrase: {{translation["de"]}}
+doc_to_text: 'German phrase: {{translation["de"]}}
 
-  English phrase:
+  English phrase:'
 metric_list:
   - metric: bleu
 output_type: generate_until
