@@ -39,6 +39,10 @@ def _extract_task_metric(result_json: Dict[str, Any], task: str) -> Optional[flo
 
 def _extract_mmlu_mean(result_json: Dict[str, Any]) -> Optional[float]:
     results = result_json.get("results") or {}
+    # Prefer the harness-provided aggregated "mmlu" score when available (matches CLI table).
+    direct = _extract_task_metric(result_json, "mmlu")
+    if direct is not None:
+        return direct
     group_subtasks = result_json.get("group_subtasks") or {}
     subtasks = group_subtasks.get("mmlu")
     if isinstance(subtasks, list) and subtasks:
@@ -51,8 +55,7 @@ def _extract_mmlu_mean(result_json: Dict[str, Any]) -> Optional[float]:
                 vals.append(metric[1])
         if vals:
             return sum(vals) / len(vals)
-    # If lm-eval exposes an aggregated "mmlu" entry, use it.
-    return _extract_task_metric(result_json, "mmlu")
+    return None
 
 
 def _fmt(x: Optional[float]) -> str:
