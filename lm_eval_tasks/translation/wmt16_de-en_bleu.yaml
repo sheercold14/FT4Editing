@@ -1,0 +1,18 @@
+# External task variant: WMT16 de->en with BLEU only.
+#
+# Motivation: the default `wmt16-de-en` task includes TER/CHRF metrics that
+# can be extremely slow in some environments. The LocFT-BF paper reports WMT16
+# but does not rely on TER; BLEU-only is sufficient for capability regression.
+
+task: wmt16-de-en-bleu
+dataset_path: wmt/wmt16
+dataset_name: de-en
+doc_to_target: ' {{translation["en"]}}'
+doc_to_text: |
+  German phrase: {{translation["de"]}}
+
+  English phrase:
+include: wmt_common_yaml
+metric_list:
+  - metric: bleu
+

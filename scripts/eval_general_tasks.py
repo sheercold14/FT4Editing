@@ -36,6 +36,7 @@ def run_lm_eval(
     limit: Optional[int],
     output_path: str,
     extra_model_args: str = "",
+    include_path: str = "",
 ) -> Dict:
     _require_lm_eval()
 
@@ -67,6 +68,8 @@ def run_lm_eval(
         output_path,
         "--write_out",
     ]
+    if include_path:
+        cmd += ["--include_path", include_path]
     if batch_size > 0:
         cmd += ["--batch_size", str(batch_size)]
     if limit is not None:
@@ -121,6 +124,7 @@ def main() -> None:
     parser.add_argument("--out_dir", type=str, default="runs/general_tasks")
     parser.add_argument("--tag", type=str, default="")
     parser.add_argument("--extra_model_args", type=str, default="")
+    parser.add_argument("--include_path", type=str, default="")
     args = parser.parse_args()
 
     if args.cuda:
@@ -144,6 +148,7 @@ def main() -> None:
         limit=args.limit,
         output_path=model_out,
         extra_model_args=args.extra_model_args,
+        include_path=args.include_path,
     )
 
     if args.base_model_path:
@@ -157,6 +162,7 @@ def main() -> None:
             limit=args.limit,
             output_path=base_out,
             extra_model_args=args.extra_model_args,
+            include_path=args.include_path,
         )
 
     meta_path = out_dir / f"meta_{Path(args.model_path).name}_{tag}.json"
