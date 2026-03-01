@@ -188,6 +188,7 @@ Repo README 也推荐用 lm-evaluation-harness 做 general task eval；对齐时
 **常见坑**
 - `lm-eval==0.4.3` 与 `datasets==4.x` 不兼容（会报 `trust_remote_code` 不支持），需要在 `ftedit` 里升级到 `lm-eval>=0.4.11`。
 - vLLM 跑 MMLU/loglikelihood 很吃显存：`batch_size=30` + `gpu_memory_utilization=0.90` 容易 OOM；建议 `batch_size=16`，并把 `gpu_memory_utilization` 降到 `0.80`（dbke 脚本默认）。
+- WMT16 默认带 `TER/CHRF`，其中 `TER` 在部分环境会非常慢甚至“卡住”。可用 dbke worktree 提供的 **BLEU-only** 外部任务：`wmt16-de-en-bleu`（需 `--include_path .worktrees/dbke/lm_eval_tasks`），见 `.worktrees/dbke/lm_eval_tasks/translation/wmt16_de-en_bleu.yaml`。
 
 ## 9) CounterFact “旧答案”字段坑：`ground_truth`
 CounterFact 数据里旧答案通常存放在 `ground_truth`（而不是 `target_old`/`pred`），这会导致：
