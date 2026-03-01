@@ -10,6 +10,22 @@ Repo root: `/data/shichao/FT4Editing`
 
 ---
 
+## TL;DR (current evidence-based story)
+
+**Observation.** On editing benchmarks, “edit success” decomposes into (at least) three separable requirements:
+1) **Write** the new answer on canonical prompts (Reliability),
+2) **Trigger** the new answer under realistic formatting/context/prefix distributions (Robustness),
+3) Avoid **side effects** (locality / general capability regression; and “old-answer resurgence” where defined).
+
+**Method.** DBKE is a *pure fine-tuning* recipe that treats many failures as (2): we **pull the trigger distribution** toward the edited behavior using rollout-based, on-policy training; and only “hard-write” (off-policy) when conflict is high (dynamic gate).
+
+**Empirical signals we already have.**
+- Across 3 in-repo datasets (ZsRE/CounterFact/WikiBigEdit), stage-2 improves **suite-defined robustness axes** (esp. `chat_wrap`, `prefix_noise`, `ctx_irrelevant`) while keeping canonical `Src EM` stable. See `.worktrees/dbke/DBKE_PERF_REPORT.md`.
+- Capability regression (lm-eval suite) stays small/mixed at current budgets. See `.worktrees/dbke/DBKE_LOCALITY_REPORT.md`.
+- On CHED (context robustness benchmark), CHED-family triggers raise success from `0.40 → 0.64` (eval200), and **holdout-context** still improves (`0.41 → 0.61`), reducing old-answer inclusion. See `.worktrees/ched/runs/*`.
+
+**Conservative claim (hard to refute).** “Editing robustness is distributional; aligning the on-policy trigger distribution yields large gains on the axes you cover, and CHED provides a direct context-robustness validation (including holdout contexts).”
+
 ## 0) Repo layout + branches (ground truth)
 
 We use `git worktree` so multiple branches/experiments can coexist under one repo root.
@@ -200,6 +216,14 @@ and report the locality tradeoff.
 2) **Evaluation clarity**: replace “one rephrase metric” with a multi-axis suite (and align to CHED for context robustness).
 3) **Empirical insight**: improvements concentrate on the axes we explicitly cover (e.g., chat wrappers, prefix noise, irrelevant context), supporting the distribution-coverage hypothesis.
 
+### Positioning vs “just data augmentation” (how we should phrase it)
+It’s valid (and often *correct*) to interpret a large portion of “editing generalization” as **targeted data augmentation over trigger distributions**. The novelty is *not* “we discovered augmentation”, but:
+- we tie augmentation to a **measurable conflict signal** (rollout mismatch / margin),
+- we show a **budgeted, editing-style fine-tuning** can achieve robustness without large global retraining,
+- we separate evaluation into axes, so “generalization” is no longer a single ambiguous scalar.
+
+The paper should explicitly acknowledge: *for some axes, the right solution is better trigger coverage*, and the scientific contribution is to (i) define axes, (ii) show which axes respond to editing-style updates, and (iii) show where the boundary is (axes that remain hard).
+
 ### What we do *not* claim (to avoid overreach)
 - We do not claim “one-shot editing yields unlimited semantic generalization”.
 - We do not claim synthetic triggers are identical to real user prompts; we treat them as a controlled approximation and validate via holdout-context tests (CHED) and multi-axis suites.
@@ -266,4 +290,3 @@ python .worktrees/ched/scripts/check_ched_rephrase_leak.py \
    - on-policy SFT vs on-policy DPO vs OPA-style (if enabled).
 3) **Report locality with paper-aligned, publishable settings** (no `--limit`, fixed few-shot, recorded decode/stops).
 4) **Generalization boundary**: define which transforms are “editing-appropriate” vs “requires data-driven retraining”, and show failure modes explicitly (suite + CHED).
-
