@@ -12,7 +12,18 @@ doc_to_text: |
   German phrase: {{translation["de"]}}
 
   English phrase:
-include: wmt_common_yaml
 metric_list:
   - metric: bleu
-
+output_type: generate_until
+training_split: train
+validation_split: validation
+fewshot_split: validation
+test_split: test
+generation_kwargs:
+  until:
+    - "\n"
+  do_sample: false
+  temperature: 0.0
+repeats: 1
+metadata:
+  version: 1.0
