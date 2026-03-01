@@ -359,3 +359,12 @@ CHED 评测脚本（分桶统计）：
 - 与任意 `rephrased_prompt` **exact match：0**
 - 与同一 edit 的 `rephrased_prompt` **exact match：0**
 - 近重复（SequenceMatcher，相似度 ≥0.95）：0；≥0.92：1（该条属于“原 prompt 与 rephrase 本来就非常接近”的 dataset 现象，不是训练时把 rephrase 拷进 prompt）
+
+另一个更容易被审稿人质疑的点：**context prefix 句子是否 train/test 重叠**。
+CHED 的 `*_sentence/*_hop_sentence` 是固定列表；如果训练 triggers 取的是前几条，而评测也取同样的前几条，会形成“评测上下文泄漏”（即使没有 `rephrased_prompt` 泄漏）。
+
+规避方式（已在 `ched` worktree 落地）：
+- `eval_ched.py` 新增 `--ctx_offset`，允许只评测“后面的” context sentences（例如训练取前 2 条，评测用 offset=2 的剩余条）。
+- 建议报告里同时给：
+  - in-context（`ctx_offset=0`）与
+  - holdout-context（`ctx_offset=2` 或随机 disjoint split）
