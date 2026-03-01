@@ -343,3 +343,19 @@ CHED 评测脚本（分桶统计）：
 - stage-2（CHED triggers）：overall success ≈ `0.635`，且 `obj_old/sbj/hop` 等 family 大幅提升，同时 `old_contains` 下降
 
 解释：这直接验证了“把 on-policy 触发分布对齐到 benchmark 定义的 context family，能显著改善上下文鲁棒性”，属于 DBKE 的核心机制证据。
+
+### 19.4) Rephrase 泄漏自检（CHED）
+为了避免把 benchmark 自带的 `rephrased_prompt` 泄漏进 stage-2 的 on-policy triggers，我们默认：
+- configs 里 `include_rephrase_triggers: false`
+- `trigger_mode: ched` 只使用 `prompt` + context families（`*_sentence/*_hop_sentence`）+ `chat_wrap`，不会主动把 `rephrased_prompt` 加入训练 prompts
+
+自检脚本（worktree `ched`）：
+- `.worktrees/ched/scripts/check_ched_rephrase_leak.py`
+
+示例（ched3k stage-2 on-policy dataset）：
+- `python .worktrees/ched/scripts/check_ched_rephrase_leak.py --ched_path data/ched/ched_3k.json --on_policy_path .worktrees/ched/data/generated/ched3k_stage2_on_chedtrig.jsonl --report_path .worktrees/ched/runs/ched3k_stage2_leakcheck.json`
+
+目前结果（24000 条 on-policy prompts）：
+- 与任意 `rephrased_prompt` **exact match：0**
+- 与同一 edit 的 `rephrased_prompt` **exact match：0**
+- 近重复（SequenceMatcher，相似度 ≥0.95）：0；≥0.92：1（该条属于“原 prompt 与 rephrase 本来就非常接近”的 dataset 现象，不是训练时把 rephrase 拷进 prompt）
