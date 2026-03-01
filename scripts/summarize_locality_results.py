@@ -69,6 +69,7 @@ def _summarize_pair(edited_json_path: Path, base_json_path: Optional[Path]) -> D
         return {
             "mmlu": _extract_mmlu_mean(d),
             "gsm8k": _extract_task_metric(d, "gsm8k"),
+            "nq_open": _extract_task_metric(d, "nq_open"),
             "sst2": _extract_task_metric(d, "sst2"),
             "wmt16-de-en": _extract_task_metric(d, "wmt16-de-en"),
         }
@@ -101,8 +102,8 @@ def main() -> None:
         raise SystemExit(f"No meta files found under {meta_dir} (tag filter='{args.tag}').")
 
     rows: List[str] = []
-    rows.append("| run | mmlu | gsm8k | sst2 | wmt16-de-en |")
-    rows.append("|---|---:|---:|---:|---:|")
+    rows.append("| run | mmlu | gsm8k | nq_open | sst2 | wmt16-de-en |")
+    rows.append("|---|---:|---:|---:|---:|---:|")
 
     for meta_path in metas:
         meta = _load_json(meta_path)
@@ -136,7 +137,9 @@ def main() -> None:
                 return _fmt(e)
             return f"{_fmt(e)} ({e - b:+.4f})"
 
-        rows.append(f"| {run_name} | {cell('mmlu')} | {cell('gsm8k')} | {cell('sst2')} | {cell('wmt16-de-en')} |")
+        rows.append(
+            f"| {run_name} | {cell('mmlu')} | {cell('gsm8k')} | {cell('nq_open')} | {cell('sst2')} | {cell('wmt16-de-en')} |"
+        )
 
     md = "\n".join(rows) + "\n"
     if args.out_md:
@@ -149,4 +152,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
