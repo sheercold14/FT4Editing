@@ -239,3 +239,107 @@ dbke-2026 已支持：
 规避：
 - 在 config 里写成 `lr: 1.0e-4` 或 `lr: 0.0001`（更稳）
 - 我们已在 dbke-2026 的 `train/train_patch.py` 的 `TrainConfig.from_yaml` 增加了类型归一化：会把字符串形式的数值（如 `\"1e-4\"`）自动 `float()`/`int()` 转换后再构建 config。
+
+## 14) Git worktree（多实验/多分支隔离：推荐布局）
+为什么需要 worktree：长实验（训练/评测）经常要同时维护多条分支与多个 checkpoint 路径；worktree 允许你在同一个 repo 下**同时 checkout 多个分支**，互不影响，且所有路径仍在 `/data/shichao/FT4Editing` 之下便于管理。
+
+本 repo 推荐布局：
+- 主工作目录：`/data/shichao/FT4Editing`（主要放文档/统一入口/数据路径）
+- 实验 worktree：`/data/shichao/FT4Editing/.worktrees/<name>`（每个 worktree 对应一个分支）
+
+常用命令：
+- 查看 worktree：`git worktree list`
+- 新建 worktree（示例）：`git worktree add .worktrees/dbke -b feat/dbke-dynamic-gate`
+- 在某个 worktree 执行 git：`git -C .worktrees/dbke status`
+- 推送分支：`git -C .worktrees/dbke push -u origin feat/dbke-dynamic-gate`
+
+当前 DBKE 主 worktree：
+- 路径：`/data/shichao/FT4Editing/.worktrees/dbke`
+- 分支：`feat/dbke-dynamic-gate`
+
+## 15) GPU 利用率为 0 / 显存占用很少：常见原因与快速排查
+先区分“**真的没在用 GPU**” vs “**任务在跑，但 GPU 利用率低/不连续**”（lm-eval/loglikelihood 类评测常出现后者）。
+
+快速排查清单：
+- GPU 是否可见：`nvidia-smi`；以及 `python -c "import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count()); print(torch.cuda.get_device_name(0) if torch.cuda.is_available() else None)"`
+- 是否误用 CPU：检查命令里是否有 `CUDA_VISIBLE_DEVICES=`（为空会强制不可见）；或 vLLM/torch 报 “CUDA not available”
+- 是否卡在 CPU 阶段：
+  - 数据集下载/解压/构建（HuggingFace `datasets` 首次会很慢）
+  - tokenizer/预处理（单核 CPU 会拖慢；GPU util 会接近 0）
+  - WMT16 `TER` 指标（已知可能极慢/卡住，见第 8 节 BLEU-only workaround）
+- vLLM 的“显存少”并不一定是问题：如果 `max_model_len` 较短、batch 小、或在做短输出 greedy，显存与 util 都可能偏低；应优先看脚本日志是否在持续产出 token / step。
+
+网络下载卡住时（按你机器环境）：
+- 可以尝试启用代理（例如 shell 里提供的 `proxy_on`），完成 `pip install` / `git clone` / `datasets` 下载后再关闭。
+
+## 16) 为什么 stage-2 会比 baseline（LocFT）更新步数多？
+第一性原因：stage-2 引入 on-policy triggers 后，**每个 edit record 会扩增为 K 条触发样本**（再加上可能的 paraphrase/ctx 变体），导致有效训练样本数显著变大。
+- baseline（LocFT 风格）常用“每条编辑固定 steps”（例如 `num_steps: 25`，`batch_size: 50`），预算更像“按 edit 计费”
+- stage-2（DBKE）更像“按样本计费”：`steps_per_epoch ≈ ceil(N_total_samples / batch_size)`，当 `N_total_samples` 因 `k_triggers`、suite_v1、多种触发变体而变大时，总步数自然上升
+
+实践建议（对齐/公平比较）：
+- 对齐 token/step 预算：固定 `total_steps` 或固定 `total_tokens`（更稳），而不是只对齐 epoch
+- 同时记录：`batch_size`、`micro_batch_size`、`grad_accum`、`max_seq_len`，否则“看起来同样 batch=30”但实际 token throughput 不可比
+
+## 17) A 表 vs B 表：性能报告怎么读（对应 `.worktrees/dbke/DBKE_PERF_REPORT.md`）
+- A 表（Repo main metric）：直接跑 `eval_edit_metric.py` 得到 `Reliability (Src) EM` + `Generalization (Rephrase) EM`，是论文/仓库最核心的主指标视角。
+- B 表（Generalization Suite v1）：把 “rephrase 泛化”拆成多种可控变换轴（如 `chat_wrap/ctx_irrelevant/prefix_noise/...`），用于定位**具体是哪类触发分布没覆盖**，以及验证“on-policy 拉分布”的假设是否成立。
+
+经验读法：
+- A 表 `Src EM` 不变 + `Rephrase EM` 小幅涨：说明写入稳定，泛化略有改善（符合“轻量拉分布”预期）
+- B 表某一轴（比如 `chat_wrap`）大涨但其他轴小涨：说明我们主要修复了该轴对应的触发分布问题（更像“针对性数据增强/触发覆盖”）
+
+## 18) 相关工作：Context-Robust Knowledge Editing（CHED / CoRE, arXiv:2505.23026）
+这篇工作与我们“触发分布/上下文鲁棒性”的主题高度重叠，核心贡献点是：
+- CHED benchmark：同一知识编辑在多种上下文前缀/多 hop 变体下的鲁棒性评测
+- CoRE 方法：通过约束不同上下文下的表征一致性（hidden-state variance）来提升跨上下文泛化；评测要求答案**包含新知识且不包含旧知识**
+
+对 DBKE 的直接启发（可落地）：
+- 把 CHED 提供的“上下文前缀”直接当作 on-policy triggers（等价于把触发分布扩展到他们定义的 context family）
+- gate 的 conflict score 可在不同 context family 上分别统计，形成“按 failure mode 触发的动态权重”
+- 若要进一步超越纯数据覆盖：可以把 CoRE 的“跨上下文不变性”作为 stage-2 的额外正则项（与我们现有 gate 兼容）
+
+## 19) CHED 融入 DBKE：已落地的最小闭环（convert → train → eval）
+我们已经在一个额外 worktree 里把 CHED 接入跑通（分支已 push）：
+- worktree：`/data/shichao/FT4Editing/.worktrees/ched`
+- 分支：`feat/ched-adapter`
+
+### 19.1) 数据转换（CoRE → FT4Editing schema）
+前置：需要 CoRE repo 的 `CHED.json`（可放在 `external/CoRE`）。
+- 转换脚本：`.worktrees/ched/scripts/convert_ched_to_ft4e.py`
+- 生成 3k 子集（推荐先跑通）：
+  - `python .worktrees/ched/scripts/convert_ched_to_ft4e.py --input_path external/CoRE/data/CHED.json --output_path data/ched/ched_3k.json --max_records 3000 --seed 0`
+
+输出字段约定（convert 后）：
+- `prompt`：已把 `prompt` 模板里的 `{}` 用 `subject` 格式化
+- `target_new` / `target_old`：对应 `edited_knowledge` / `fact_knowledge`
+- `*_sentence` / `*_hop_sentence`：保留为 list，用于 CHED 触发分布/评测分桶
+- `locality_prompts/locality_ground_truth`：保留为 list，同时提供单条 `locality_prompt/locality_ground_truth` 兼容旧代码
+
+### 19.2) 训练：CHED triggers（on-policy）提升跨上下文鲁棒性
+CHED trigger 模式已接入：
+- `trigger_mode: ched`（见 `.worktrees/ched/on_policy/trigger_generator.py` + `.worktrees/ched/train/train_patch.py`）
+- 触发包含：`chat_wrap` + 多个 context family（`sbj/obj_old/obj_new` 及 hop）
+
+示例 configs（先 3k）：
+- E0（off-policy SFT）：`.worktrees/ched/configs/ched3k_full_e0.yaml`
+- E5（dynamic gate + on-policy，CHED triggers）：
+  - SFT gate：`.worktrees/ched/configs/ched3k_stage2_e5_gate_sft_chedtrig.yaml`
+  - auto gate（高冲突时 DPO）：`.worktrees/ched/configs/ched3k_stage2_e5_gate_auto_chedtrig.yaml`
+
+运行：
+- `python -m train.train_patch --config_path .worktrees/ched/configs/ched3k_full_e0.yaml`
+- `python -m train.train_patch --config_path .worktrees/ched/configs/ched3k_stage2_e5_gate_sft_chedtrig.yaml`
+
+### 19.3) 评测：CHED-style success（包含新知识且不包含旧知识）
+CHED 评测脚本（分桶统计）：
+- `.worktrees/ched/scripts/eval_ched.py`
+- 示例（200 样本 smoke）：
+  - `CUDA_VISIBLE_DEVICES=0 python .worktrees/ched/scripts/eval_ched.py --data_path data/ched/ched_3k.json --model_path .worktrees/ched/saves/ched3k_full_e0_off_sft --max_records 200 --per_family_k 1 --max_tokens 8 --output_path .worktrees/ched/runs/ched3k_e0_eval200.json`
+  - `CUDA_VISIBLE_DEVICES=0 python .worktrees/ched/scripts/eval_ched.py --data_path data/ched/ched_3k.json --model_path .worktrees/ched/saves/ched3k_stage2_e5_gate_sft_chedtrig --max_records 200 --per_family_k 1 --max_tokens 8 --output_path .worktrees/ched/runs/ched3k_stage2_eval200.json`
+
+已观测到的趋势（CHED-3k，eval200，`per_family_k=1`）：
+- E0：overall success ≈ `0.401`（canonical `prompt` 族接近 1.0，但 `obj_old/sbj/rephrase/hop` 明显更低）
+- stage-2（CHED triggers）：overall success ≈ `0.635`，且 `obj_old/sbj/hop` 等 family 大幅提升，同时 `old_contains` 下降
+
+解释：这直接验证了“把 on-policy 触发分布对齐到 benchmark 定义的 context family，能显著改善上下文鲁棒性”，属于 DBKE 的核心机制证据。
