@@ -368,3 +368,38 @@ CHED 的 `*_sentence/*_hop_sentence` 是固定列表；如果训练 triggers 取
 - 建议报告里同时给：
   - in-context（`ctx_offset=0`）与
   - holdout-context（`ctx_offset=2` 或随机 disjoint split）
+
+## 20) Multi-hop 知识编辑：MQuAKE-Remastered（CF3k）
+我们新增了一个 multi-hop benchmark 适配（HuggingFace 上的 `MQuAKE-Remastered`），用来回答：
+- “单跳事实写入成功”是否会**自动传播**到 multi-hop 下游问答？（通常不会）
+- 如果把 multi-hop question 当成 on-policy triggers 去对齐，是否能显著修复？（目前 smoke 结果：能）
+
+实现与代码位置（worktree + 已 push）：
+- worktree：`/data/shichao/FT4Editing/.worktrees/mquake`
+- 分支：`feat/mquake-multihop`
+- 下载/转换：`.worktrees/mquake/scripts/convert_mquake_remastered.py`
+- 构建 on-policy multi-hop 数据（可选 rollout 填 rejected + conflict）：`.worktrees/mquake/scripts/build_mquake_on_policy_multihop.py`
+- 评测：`.worktrees/mquake/scripts/eval_mquake_multihop.py`
+- configs：
+  - E0：`.worktrees/mquake/configs/mquake_cf3k_e0_off_sft.yaml`
+  - stage-2（混合 off-policy 单跳 + on-policy multi-hop）：`.worktrees/mquake/configs/mquake_cf3k_stage2_mix_multihop_on.yaml`
+
+推荐最小跑法（先 smoke=200 看趋势）：
+1) 转换 CF3k：
+   - `python .worktrees/mquake/scripts/convert_mquake_remastered.py --hf_split CF3k --prompt_mode question --output_path data/mquake_remastered/mquake_remastered_cf3k.json --seed 0`
+2) 训练 E0（只写入单跳 edit）：
+   - `CUDA_VISIBLE_DEVICES=1 python -m train.train_patch --config_path .worktrees/mquake/configs/mquake_cf3k_e0_off_sft.yaml`
+3) 评测 E0（单跳 + multi-hop）：
+   - `CUDA_VISIBLE_DEVICES=1 python .worktrees/mquake/scripts/eval_mquake_multihop.py --data_path data/mquake_remastered/mquake_remastered_cf3k.json --model_path .worktrees/mquake/saves/mquake_cf3k_e0_off_sft --max_records 200 --max_tokens 24 --output_path .worktrees/mquake/runs/mquake_cf3k_e0_eval200.json`
+4) 构建 stage-2 的 on-policy multi-hop（示例：只用 `questions[0]` 作为训练触发；rollout 模型用 E0）：
+   - `python .worktrees/mquake/scripts/build_mquake_on_policy_multihop.py --data_path data/mquake_remastered/mquake_remastered_cf3k.json --output_path .worktrees/mquake/data/generated/mquake_cf3k_multihop_on.jsonl --train_q_idx 0 --rollout_model_path .worktrees/mquake/saves/mquake_cf3k_e0_off_sft --cuda 1 --max_tokens 24`
+5) stage-2 训练（混合单跳 off-policy + multi-hop on-policy）：
+   - `CUDA_VISIBLE_DEVICES=1 python -m train.train_patch --config_path .worktrees/mquake/configs/mquake_cf3k_stage2_mix_multihop_on.yaml`
+6) 评测 stage-2：
+   - `CUDA_VISIBLE_DEVICES=1 python .worktrees/mquake/scripts/eval_mquake_multihop.py --data_path data/mquake_remastered/mquake_remastered_cf3k.json --model_path .worktrees/mquake/saves/mquake_cf3k_stage2_mix_multihop_on --max_records 200 --max_tokens 24 --output_path .worktrees/mquake/runs/mquake_cf3k_stage2_eval200.json`
+
+已观察到的关键现象（CF3k eval200）：
+- E0：单跳成功率接近 1.0，但 multi-hop 三个问法的 success 很低（约 `0.03~0.07`）
+- stage-2（只训练 q0 的 multi-hop triggers）：q0 大幅提升，同时 **q1/q2（holdout phrasing）也显著提升**（约到 `0.18~0.21`）
+
+解释（论文写法建议）：multi-hop 并不是“同一事实的改写”，它把知识写入与下游组合推理耦合起来；我们可以把它当作“泛化边界”的强测，并用 on-policy triggers 来量化“需要额外对齐多少触发分布才能越过这条边界”。
