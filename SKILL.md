@@ -474,6 +474,20 @@ MQuAKE-Remastered 论文指出：CF3k/CF9k 的 dynamic masking 机制更偏向�
 对比（同模型规模下，我们的“直接 multi-hop on-policy 对齐” stage-2 在官方风格评测上 `case_acc_any ≈ 0.308`）：
 - 表明：在小模型下，**纯检索/走图**并不能替代“把 multi-hop 当能力分布来塑造”的训练；同时也验证了 GWalk 里 `M` 的中间环节会卡上限（换更强 `M` 才可能接近论文报告的 60%+）。
 
+#### (d) 对齐论文 GWalk@7B：用 raw MQuAKE-Remastered 格式 + 7B `M` 复现到 70%+
+我们额外实现了一个 **raw dataset 格式**的 GWalk “oracle-walk” 评测器（直接读 `external/MQuAKE-Remastered/datasets/*.json`），并用本地的 `qwen25-7b` 跑通 CF3k，得到与论文表格同量级的结果（甚至略高，说明主要差距来自 `M` 的规模/能力与数据格式对齐）。
+
+实现（额外 worktree）：
+- worktree：`/data/shichao/FT4Editing/.worktrees/gwalk-faithful`
+- 分支：`feat/gwalk-faithful`
+- 脚本：`.worktrees/gwalk-faithful/scripts/eval_mquake_remastered_gwalk.py`
+
+跑法（CF3k 全量 3000；Qwen2.5-7B；开启 edit bank 覆盖）：
+- `CUDA_VISIBLE_DEVICES=1 python .worktrees/gwalk-faithful/scripts/eval_mquake_remastered_gwalk.py --data_path external/MQuAKE-Remastered/datasets/MQuAKE-Remastered-CF-3k.json --model_path /data/shichao/data/qwen25-7b --use_memory --max_tokens 8 --output_path .worktrees/gwalk-faithful/runs/gwalk_cf3k_qwen25-7b_oraclewalk.json`
+
+当前观测（Qwen2.5-7B；CF3k 全量）：
+- `edited_acc ≈ 0.736`（对齐论文 Table 18 里 GWalk@Qwen2.5-7B `66.74%` 的量级）
+
 ### 20.3) 在 CF6334 上跑参数化 DBKE（stage-1 + stage-2）
 我们在 `mquake` worktree 增加了 CF6334 的两阶段 configs：
 - Stage-1（E0 off-policy 单跳写入）：`.worktrees/mquake/configs/mquake_cf6334_e0_off_sft.yaml`

@@ -257,6 +257,14 @@ Results (Qwen3-1.7B; CF3k full 3000; GWalk-oracle with edit bank override):
 
 Interpretation: with a small `M`, even an oracle walk + perfect edited-fact retrieval does not reach the stage-2 *direct multi-hop* accuracy (`case_acc_any≈0.308`). This supports the boundary story: “multi-hop generalization” is not just “can you retrieve the edited fact”, but also “can you stably execute the downstream reasoning under the trigger distribution”.
 
+### Aligning to the paper’s reported GWalk range (swap in a 7B `M` + raw dataset format)
+To sanity-check that our evaluation wiring can reach the paper’s reported **GWalk@Qwen2.5-7B ≈ 66.74%** on CF-3K, we added a **raw MQuAKE-Remastered format** evaluator (uses hop templates from the dataset’s `single_hops` cloze, walks hop-by-hop, and overrides edited hops when the edit bank hits; includes per-case contamination masking via the official `get_masked_edits` criterion).
+
+Code + runs:
+- Worktree: `.worktrees/gwalk-faithful` (branch `feat/gwalk-faithful`)
+- Script: `.worktrees/gwalk-faithful/scripts/eval_mquake_remastered_gwalk.py`
+- Run (CF-3K, Qwen2.5-7B, full 3000): `.worktrees/gwalk-faithful/runs/gwalk_cf3k_qwen25-7b_oraclewalk.json` → `edited_acc=0.736`
+
 ### CF6334 split (more parameter-edit-friendly)
 The MQuAKE-Remastered paper notes that CF3k/CF9k’s masking protocol is geared towards retrieval-style methods and is not a fair setting for parameter-edit methods. They provide CF6334 as a more parameter-edit-friendly split.
 
