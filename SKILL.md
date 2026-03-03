@@ -403,3 +403,17 @@ CHED 的 `*_sentence/*_hop_sentence` 是固定列表；如果训练 triggers 取
 - stage-2（只训练 q0 的 multi-hop triggers）：q0 大幅提升，同时 **q1/q2（holdout phrasing）也显著提升**（约到 `0.18~0.21`）
 
 解释（论文写法建议）：multi-hop 并不是“同一事实的改写”，它把知识写入与下游组合推理耦合起来；我们可以把它当作“泛化边界”的强测，并用 on-policy triggers 来量化“需要额外对齐多少触发分布才能越过这条边界”。
+
+### 20.1) 与官方脚本一致的 strict 评测（case-level any-of-questions）
+MQuAKE-Remastered 官方 `cal_accuracy` 是 **case-level**：一个 case 如果多次提问产生多个答案，只要 **any** 一个答案与（新）答案或 alias 完全一致，就算该 case 正确。
+
+我们在 `mquake` worktree 增加了一个“官方风格”的评测器（更适合与论文表格对齐）：
+- `.worktrees/mquake/scripts/eval_mquake_remastered_official.py`
+
+示例（CF3k 全量 3000，q0/q1/q2 都问，case 正确=any match）：
+- E0：`CUDA_VISIBLE_DEVICES=1 python .worktrees/mquake/scripts/eval_mquake_remastered_official.py --data_path data/mquake_remastered/mquake_remastered_cf3k.json --model_path .worktrees/mquake/saves/mquake_cf3k_e0_off_sft --max_records 0 --output_path .worktrees/mquake/runs/mquake_cf3k_e0_evalall_official.json`
+- stage-2：`CUDA_VISIBLE_DEVICES=1 python .worktrees/mquake/scripts/eval_mquake_remastered_official.py --data_path data/mquake_remastered/mquake_remastered_cf3k.json --model_path .worktrees/mquake/saves/mquake_cf3k_stage2_mix_multihop_on --max_records 0 --output_path .worktrees/mquake/runs/mquake_cf3k_stage2_evalall_official.json`
+
+当前观测（Qwen3-1.7B，CF3k 全量）：
+- E0：`case_acc_any ≈ 0.084`
+- stage-2：`case_acc_any ≈ 0.308`（显著提升，但仍低于同 benchmark 上的 retrieval 类方法）
