@@ -1,0 +1,30 @@
+model_name_or_path: "/data/shichao/data/Qwen3-1.7B"
+off_data_path: "/data/shichao/FT4Editing/data/mquake_remastered/mquake_remastered_cf3k.json"
+on_data_path: "./data/generated/mquake_cf3k_on.jsonl"
+save_model_dir: "./saves/mquake_cf3k_e0_off_sft"
+
+objective: "off_sft"
+use_dynamic_gate: false
+lambda_on: 0.0
+lambda_off: 1.0
+on_ratio: 0.0
+
+lr: 5.0e-4
+batch_size: 30
+micro_batch_size: 30
+num_epochs: 10
+steps_per_epoch: 100
+early_stop_loss: 1.0e-2
+
+refresh_interval: 999
+max_refresh_records: 0
+conflict_score_mode: "mismatch"
+include_rephrase_triggers: false
+k_triggers: 4
+beta: 0.1
+
+device: 0
+seed: 42
+train_layer: 6
+rewrite_module: "model.layers.{}.mlp.down_proj.weight"
+
