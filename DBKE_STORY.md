@@ -265,7 +265,17 @@ We converted the split to our JSON schema:
 
 GWalk-oracle sanity (Qwen3-1.7B; CF6334 full; with edit bank override):
 - base `M`: `.worktrees/gwalk/runs/gwalk_oracle_cf6334_base_mem_full.json` → `acc=0.237`
-- DBKE stage-2 `M`: `.worktrees/gwalk/runs/gwalk_oracle_cf6334_dbke_mem_full.json` → `acc=0.241`
+- DBKE stage-2 `M` (trained on CF3k): `.worktrees/gwalk/runs/gwalk_oracle_cf6334_dbke_mem_full.json` → `acc=0.241`
+- DBKE stage-2 `M` (trained on CF6334): `.worktrees/gwalk/runs/gwalk_oracle_cf6334_dbke_cf6334stage2_mem_full.json` → `acc=0.246`
+
+Parametric DBKE on CF6334 (Qwen3-1.7B; official strict alias match; q0/q1/q2 queried; case correct if **any** matches):
+- Base (un-edited) model: `.worktrees/mquake/runs/mquake_cf6334_base_eval200_official.json` → `case_acc_any=0.000` (eval200 sanity)
+- Stage-1 (E0 off-policy single-hop SFT): `.worktrees/mquake/runs/mquake_cf6334_e0_evalall_official.json` → `case_acc_any=0.073`
+- Stage-2 (mix off-policy single-hop + on-policy multi-hop q0): `.worktrees/mquake/runs/mquake_cf6334_stage2_evalall_official.json` → `case_acc_any=0.143`
+
+Diagnostic (normalized-match; includes the single-hop edit prompt success):
+- Stage-1: `.worktrees/mquake/runs/mquake_cf6334_e0_evalall_multihop.json` → `single_success=0.705`, `mh_q0≈0.042`
+- Stage-2: `.worktrees/mquake/runs/mquake_cf6334_stage2_evalall_multihop.json` → `single_success=0.762`, `mh_q0≈0.094`
 
 ---
 

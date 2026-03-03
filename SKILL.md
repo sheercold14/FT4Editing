@@ -473,3 +473,29 @@ MQuAKE-Remastered 论文指出：CF3k/CF9k 的 dynamic masking 机制更偏向�
 
 对比（同模型规模下，我们的“直接 multi-hop on-policy 对齐” stage-2 在官方风格评测上 `case_acc_any ≈ 0.308`）：
 - 表明：在小模型下，**纯检索/走图**并不能替代“把 multi-hop 当能力分布来塑造”的训练；同时也验证了 GWalk 里 `M` 的中间环节会卡上限（换更强 `M` 才可能接近论文报告的 60%+）。
+
+### 20.3) 在 CF6334 上跑参数化 DBKE（stage-1 + stage-2）
+我们在 `mquake` worktree 增加了 CF6334 的两阶段 configs：
+- Stage-1（E0 off-policy 单跳写入）：`.worktrees/mquake/configs/mquake_cf6334_e0_off_sft.yaml`
+- Stage-2（固定混合：off-policy 单跳 + on-policy multi-hop q0）：`.worktrees/mquake/configs/mquake_cf6334_stage2_mix_multihop_on.yaml`
+
+推荐跑法：
+1) 转换 CF6334：
+   - `python .worktrees/mquake/scripts/convert_mquake_remastered.py --hf_split CF6334 --prompt_mode question --output_path data/mquake_remastered/mquake_remastered_cf6334.json --seed 0`
+2) Stage-1 训练（写入单跳 edit）：
+   - `python -m train.train_patch --config_path .worktrees/mquake/configs/mquake_cf6334_e0_off_sft.yaml`
+3) 构建 stage-2 的 on-policy multi-hop（q0；rollout 用 stage-1 模型）：
+   - `python .worktrees/mquake/scripts/build_mquake_on_policy_multihop.py --data_path data/mquake_remastered/mquake_remastered_cf6334.json --output_path .worktrees/mquake/data/generated/mquake_cf6334_multihop_on.jsonl --train_q_idx 0 --rollout_model_path .worktrees/mquake/saves/mquake_cf6334_e0_off_sft --cuda 3 --max_tokens 24`
+4) Stage-2 训练（混合单跳 off-policy + multi-hop on-policy）：
+   - `python -m train.train_patch --config_path .worktrees/mquake/configs/mquake_cf6334_stage2_mix_multihop_on.yaml`
+5) 官方风格评测（strict alias match；case-level any-of q0/q1/q2）：
+   - `python .worktrees/mquake/scripts/eval_mquake_remastered_official.py --data_path data/mquake_remastered/mquake_remastered_cf6334.json --model_path .worktrees/mquake/saves/mquake_cf6334_e0_off_sft --max_records 0 --output_path .worktrees/mquake/runs/mquake_cf6334_e0_evalall_official.json`
+   - `python .worktrees/mquake/scripts/eval_mquake_remastered_official.py --data_path data/mquake_remastered/mquake_remastered_cf6334.json --model_path .worktrees/mquake/saves/mquake_cf6334_stage2_mix_multihop_on --max_records 0 --output_path .worktrees/mquake/runs/mquake_cf6334_stage2_evalall_official.json`
+
+当前观测（Qwen3-1.7B；CF6334 全量 9171）：
+- Stage-1：`case_acc_any ≈ 0.073`
+- Stage-2：`case_acc_any ≈ 0.143`（约 2x 提升）
+
+补充诊断（更宽松的 normalized-match，含单跳编辑成功率）：
+- Stage-1：`.worktrees/mquake/runs/mquake_cf6334_e0_evalall_multihop.json`（`single_success≈0.705`）
+- Stage-2：`.worktrees/mquake/runs/mquake_cf6334_stage2_evalall_multihop.json`（`single_success≈0.762`）
