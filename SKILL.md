@@ -151,6 +151,31 @@
   - 提高 `k_triggers`（但注意 on-policy 数据构建耗时）
   - 用“未泄漏”的 paraphrase/trigger（不要直接用数据集自带 `rephrase`；或者用它但必须做 no-leak eval 并在报告里标注）
 
+## 5.1) MineHard：on-policy hard prompt mining（dbke-2026 当前最有效的泛化提升）
+经验结论（2026-03-03 在 CounterFact/WikiBigEdit 上已验证）：
+- “固定 K triggers + 训练”经常只学到模板鲁棒，提升很小；**真正的杠杆是：先用当前模型 rollout，挖出它最容易错的触发 prompt，再训**（贴着 failure modes）。
+- 在高冲突样本占比高的场景里，**on-policy DPO-only 会明显变差**；on-policy SFT（蒸馏到 `target_new`）更稳、更能拉动 rephrase EM。
+
+落地（dbke-2026）：
+- 构造 on-policy 数据：`scripts/build_on_policy_dataset.py` 支持
+  - `--mine_hard`：启用 hard mining
+  - `--candidates_per_record N`：每条 edit 生成更大候选池
+  - `--hard_mismatch_frac X`：保留的 K 条里，mismatch 占比（剩下用 match 填充）
+
+推荐跑法（CounterFact-3k，GPU1 示例）：
+- 构造：`CUDA_VISIBLE_DEVICES=1 python scripts/build_on_policy_dataset.py --model_path saves/align_cf_e0_fullpass --off_data_path data/counterfact/counterfact_3k.json --output_path data/generated/cf_minehard3k_pool32_k8_on.jsonl --k 8 --trigger_mode template+counterfact --max_samples 3000 --mine_hard --candidates_per_record 32 --hard_mismatch_frac 0.75 --score_mode mismatch --editor target_only --force`
+- 训练（SFT-only，当前 best/稳）：`CUDA_VISIBLE_DEVICES=1 python scripts/train.py --config_path configs/generated/cf_minehard3k_on_sft_only.yaml`
+- 结果（对照 baseline `rephrase=0.1623`）：`runs/cf_minehard3k_on_sft_only_eval3000_seed0.json` 给到 `rephrase≈0.2267`（no-leak `≈0.2240`）。
+
+WikiBigEdit（semantic paraphrase 为主，GPU3 示例）：
+- 先用 `--add_model_paraphrase --max_model_paraphrases_per_record 2` 造无泄漏 paraphrase 候选，再 MineHard：
+  - `CUDA_VISIBLE_DEVICES=3 python scripts/build_on_policy_dataset.py --model_path saves/align_wbe_e0_fullpass --off_data_path data/wikibigedit/wikibigedit_3k.json --output_path data/generated/wbe_minehard1k_para2_pool32_k8_on.jsonl --k 8 --trigger_mode template --max_samples 1000 --add_model_paraphrase --max_model_paraphrases_per_record 2 --mine_hard --candidates_per_record 32 --hard_mismatch_frac 0.75 --score_mode mismatch --editor target_only --force`
+- 训练：`CUDA_VISIBLE_DEVICES=3 python scripts/train.py --config_path configs/generated/wbe_minehard1k_on_sft_only_L6.yaml`
+- 结果（对照 baseline `rephrase=0.6310`）：`runs/wbe_minehard1k_on_sft_only_L6_eval3000_seed0.json` 给到 `rephrase≈0.6510`（no-leak `≈0.6507`）。
+
+调参提醒：
+- `train_layer` 影响非常大：CounterFact 上 L2 可以略提 rephrase，但更容易损 reliability；可用 **混一点 off-policy**（例如 `on_ratio≈0.7`）拉回 reliability（见 `runs/cf_minehard1k_sft_L2_on70_eval3000_seed0.json`）。
+
 ## 6) 2026 继续迭代建议（从论文动向抽象成可落地 ablation）
 （这里先记“方向”，具体落地以 runner + configs 为准）
 - 更可靠的冲突信号：mismatch + margin / NLL（减少阈值饱和）
@@ -417,3 +442,34 @@ MQuAKE-Remastered 官方 `cal_accuracy` 是 **case-level**：一个 case 如果�
 当前观测（Qwen3-1.7B，CF3k 全量）：
 - E0：`case_acc_any ≈ 0.084`
 - stage-2：`case_acc_any ≈ 0.308`（显著提升，但仍低于同 benchmark 上的 retrieval 类方法）
+
+### 20.2) CF6334（参数化编辑更“公平”的 split）+ 一个最小 GWalk-oracle baseline
+MQuAKE-Remastered 论文指出：CF3k/CF9k 的 dynamic masking 机制更偏向检索/工具法，**不太适合**“参数化编辑方法”的公平比较；他们提供了更适合参数化方法的 split：`CF6334`。
+
+#### (a) 转换 CF6334
+- `python .worktrees/mquake/scripts/convert_mquake_remastered.py --hf_split CF6334 --prompt_mode question --output_path data/mquake_remastered/mquake_remastered_cf6334.json --seed 0`
+
+#### (b) 自检：`edit_cloze` 对齐 bug（已修）
+早期 converter 里 `edit_cloze` 误取了 `new_single_hops[0]`，会导致 `edit_cloze` 与 `edit_question` 不一致（影响后续做基于 cloze 的触发/分析）。
+修复策略：优先按 `edit_question` 精确匹配 hop；其次用 `subject` 替换成 `{}` 后与 `edit_prompt_template` 匹配；最后才退化到第一个 hop。
+
+#### (c) 最小 GWalk-oracle baseline（用真实 hop chain 作为“oracle decompose”）
+目的：用一个**结构最小、可跑通**的 “walk + edited fact bank” baseline 来诊断 “multi-hop 错误来自哪里”：
+- edited hop：如果 `(subject, relation_template)` 命中 edit bank，则强制使用 `target_new`
+- non-edited hop：仍由 LLM `M` 来补全（因此 `M` 的单跳知识/分解能力会直接限制上限）
+
+实现（新 worktree）：
+- worktree：`/data/shichao/FT4Editing/.worktrees/gwalk`
+- 分支：`feat/gwalk-baseline`
+- 评测脚本：`.worktrees/gwalk/scripts/eval_mquake_gwalk_oracle.py`
+
+跑法（示例：CF3k 全量，use_memory=开启 edit bank 覆盖）：
+- base `M`：`CUDA_VISIBLE_DEVICES=2 python .worktrees/gwalk/scripts/eval_mquake_gwalk_oracle.py --data_path data/mquake_remastered/mquake_remastered_cf3k.json --model_path /data/shichao/data/Qwen3-1.7B --max_records 0 --use_memory --max_tokens 8 --output_path .worktrees/gwalk/runs/gwalk_oracle_cf3k_base_mem_full.json`
+- DBKE stage-2 `M`：`CUDA_VISIBLE_DEVICES=3 python .worktrees/gwalk/scripts/eval_mquake_gwalk_oracle.py --data_path data/mquake_remastered/mquake_remastered_cf3k.json --model_path .worktrees/mquake/saves/mquake_cf3k_stage2_mix_multihop_on --max_records 0 --use_memory --max_tokens 8 --output_path .worktrees/gwalk/runs/gwalk_oracle_cf3k_dbke_mem_full.json`
+
+当前观测（Qwen3-1.7B，GWalk-oracle，CF3k 全量）：
+- base `M`：`acc ≈ 0.227`
+- DBKE stage-2 `M`：`acc ≈ 0.238`
+
+对比（同模型规模下，我们的“直接 multi-hop on-policy 对齐” stage-2 在官方风格评测上 `case_acc_any ≈ 0.308`）：
+- 表明：在小模型下，**纯检索/走图**并不能替代“把 multi-hop 当能力分布来塑造”的训练；同时也验证了 GWalk 里 `M` 的中间环节会卡上限（换更强 `M` 才可能接近论文报告的 60%+）。

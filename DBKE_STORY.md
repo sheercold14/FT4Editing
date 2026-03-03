@@ -235,6 +235,38 @@ Gap to SOTA (apples-to-oranges caveat: model size + method class differ):
 - vs GWalk@Qwen2.5-7B (`66.74%`): our stage-2 is ~`-35.9` points
 - vs DeepEdit@Qwen2.5-7B (`5.43%`): our stage-2 is ~`+25.4` points
 
+### “GWalk upper bound depends on M”: a minimal GWalk-oracle diagnostic
+GWalk uses an LLM `M` for decomposition and per-hop answering. This implies an immediate (but often unstated) constraint:
+> even with a perfect edited-fact memory, multi-hop accuracy is capped by how well `M` can answer the non-edited hops and follow the walk.
+
+To quantify this effect in our current setup, we implemented a **minimal GWalk-oracle** diagnostic:
+- uses the dataset-provided hop chain as an *oracle decomposition* (so we isolate the “walk + hop answering” component),
+- keeps an edit bank mapping `(subject, relation_template) -> target_new` and overrides hop answers on hit,
+- asks `M` to complete the remaining non-edited hops as cloze statements.
+
+Code + artifacts:
+- Worktree: `.worktrees/gwalk` (branch `feat/gwalk-baseline`)
+- Script: `.worktrees/gwalk/scripts/eval_mquake_gwalk_oracle.py`
+- Runs:
+  - base `M`: `.worktrees/gwalk/runs/gwalk_oracle_cf3k_base_mem_full.json`
+  - DBKE stage-2 `M`: `.worktrees/gwalk/runs/gwalk_oracle_cf3k_dbke_mem_full.json`
+
+Results (Qwen3-1.7B; CF3k full 3000; GWalk-oracle with edit bank override):
+- base `M`: `acc=0.227`
+- DBKE stage-2 `M`: `acc=0.238`
+
+Interpretation: with a small `M`, even an oracle walk + perfect edited-fact retrieval does not reach the stage-2 *direct multi-hop* accuracy (`case_acc_any≈0.308`). This supports the boundary story: “multi-hop generalization” is not just “can you retrieve the edited fact”, but also “can you stably execute the downstream reasoning under the trigger distribution”.
+
+### CF6334 split (more parameter-edit-friendly)
+The MQuAKE-Remastered paper notes that CF3k/CF9k’s masking protocol is geared towards retrieval-style methods and is not a fair setting for parameter-edit methods. They provide CF6334 as a more parameter-edit-friendly split.
+
+We converted the split to our JSON schema:
+- Dataset: `/data/shichao/FT4Editing/data/mquake_remastered/mquake_remastered_cf6334.json` (n=9171)
+
+GWalk-oracle sanity (Qwen3-1.7B; CF6334 full; with edit bank override):
+- base `M`: `.worktrees/gwalk/runs/gwalk_oracle_cf6334_base_mem_full.json` → `acc=0.237`
+- DBKE stage-2 `M`: `.worktrees/gwalk/runs/gwalk_oracle_cf6334_dbke_mem_full.json` → `acc=0.241`
+
 ---
 
 ## 6) Rigor / threats-to-validity checklist (what reviewers will ask)
