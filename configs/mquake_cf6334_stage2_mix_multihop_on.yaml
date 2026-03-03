@@ -1,0 +1,31 @@
+model_name_or_path: "./saves/mquake_cf6334_e0_off_sft"
+off_data_path: "/data/shichao/FT4Editing/data/mquake_remastered/mquake_remastered_cf6334.json"
+on_data_path: "./data/generated/mquake_cf6334_multihop_on.jsonl"
+save_model_dir: "./saves/mquake_cf6334_stage2_mix_multihop_on"
+
+objective: "dynamic_gate"
+use_dynamic_gate: false
+# Use the gate runner as a simple mixer (fixed lambdas).
+on_objective: "sft"
+lambda_on: 1.0
+lambda_off: 1.0
+on_ratio: 0.5
+
+lr: 1.0e-4
+batch_size: 30
+micro_batch_size: 30
+num_epochs: 2
+steps_per_epoch: 310
+
+refresh_interval: 999
+max_refresh_records: 0
+conflict_score_mode: "mismatch"
+include_rephrase_triggers: false
+k_triggers: 4
+beta: 0.1
+
+device: 2
+seed: 42
+train_layer: 6
+rewrite_module: "model.layers.{}.mlp.down_proj.weight"
+
