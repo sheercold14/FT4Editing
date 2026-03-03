@@ -28,6 +28,54 @@ def _first(lst: Any) -> Any:
     return None
 
 
+def _find_edit_cloze(
+    row: Dict[str, Any],
+    *,
+    edit_question: str,
+    subject: str,
+    prompt_tmpl: str,
+) -> str:
+    """
+    Choose the cloze string corresponding to the factual edit.
+
+    MQuAKE-Remastered rows contain multiple single-hop facts (a reasoning chain). The edit
+    corresponds to `requested_rewrite[0]` (subject + relation + new object). We try to align
+    the edit to a hop by exact question match, then by template match, and finally fall back
+    to the first hop.
+    """
+
+    def norm(s: Any) -> str:
+        return _ws(str(s or ""))
+
+    hops_new = row.get("new_single_hops") if isinstance(row.get("new_single_hops"), list) else []
+    hops_old = row.get("single_hops") if isinstance(row.get("single_hops"), list) else []
+    hops = [h for h in (hops_new or hops_old) if isinstance(h, dict)]
+
+    # 1) Exact question match (most reliable).
+    if edit_question:
+        for h in hops:
+            if norm(h.get("question")) == edit_question:
+                return norm(h.get("cloze"))
+
+    # 2) Template match: replace subject with {} and compare against requested rewrite template.
+    if subject and prompt_tmpl and "{}" in prompt_tmpl:
+        for h in hops:
+            cloze = norm(h.get("cloze"))
+            if not cloze or subject not in cloze:
+                continue
+            tmpl = cloze.replace(subject, "{}", 1)
+            if tmpl == prompt_tmpl:
+                return cloze
+
+    # 3) Fallback: first hop cloze if present.
+    for h in hops:
+        cloze = norm(h.get("cloze"))
+        if cloze:
+            return cloze
+
+    return ""
+
+
 def convert_row(row: Dict[str, Any], *, prompt_mode: str) -> Optional[Dict[str, Any]]:
     rr0 = _first(row.get("requested_rewrite"))
     if not isinstance(rr0, dict):
@@ -39,9 +87,8 @@ def convert_row(row: Dict[str, Any], *, prompt_mode: str) -> Optional[Dict[str, 
     target_old = _ws(rr0.get("target_true_str", ""))
     target_new = _ws(rr0.get("target_new_str", ""))
 
-    # Canonical single-hop prompts
-    single_hop0 = _first(row.get("new_single_hops")) if isinstance(row.get("new_single_hops"), list) else None
-    cloze = _ws(single_hop0.get("cloze", "")) if isinstance(single_hop0, dict) else ""
+    # Canonical single-hop prompts (aligned to the edit)
+    cloze = _find_edit_cloze(row, edit_question=edit_question, subject=subject, prompt_tmpl=prompt_tmpl)
 
     if prompt_mode == "question":
         prompt = edit_question
@@ -127,4 +174,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
