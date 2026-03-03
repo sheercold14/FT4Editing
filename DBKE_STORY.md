@@ -182,6 +182,46 @@ Interpretation: CHED-family triggers mainly improve **context robustness familie
 
 ---
 
+## 5.4) Multi-hop knowledge editing: MQuAKE-Remastered (CF3k smoke)
+
+### Why this matters
+CHED tests robustness to *context prefixes*, but the answer is still a **single fact string**. Multi-hop editing asks a stronger question:
+> after editing one fact, does the model’s *downstream multi-hop answer* update accordingly?
+
+This directly supports the “generalization boundary” story: canonical write success can be high while multi-hop behavior remains broken.
+
+### Adapter + scripts (where)
+Worktree: `/data/shichao/FT4Editing/.worktrees/mquake` (branch `feat/mquake-multihop`)
+
+- Convert/download (HF → JSON):
+  - `.worktrees/mquake/scripts/convert_mquake_remastered.py`
+  - Output used: `/data/shichao/FT4Editing/data/mquake_remastered/mquake_remastered_cf3k.json`
+- Build on-policy multi-hop dataset (q0 only; with rollouts as rejected):
+  - `.worktrees/mquake/scripts/build_mquake_on_policy_multihop.py`
+  - Output: `.worktrees/mquake/data/generated/mquake_cf3k_multihop_on.jsonl`
+- Eval (single-hop edit prompt + multi-hop questions):
+  - `.worktrees/mquake/scripts/eval_mquake_multihop.py`
+
+### Experiment definition (minimal, story-relevant)
+- **Stage-1 (E0)** trains only the *edited single-hop* supervision (`requested_rewrite`) and evaluates multi-hop questions.
+- **Stage-2** adds *on-policy-like* supervision on **one** multi-hop question per record (q0), then evaluates on **held-out** paraphrases q1/q2.
+
+### Results (CF3k; eval200 smoke)
+Artifacts:
+- E0: `.worktrees/mquake/runs/mquake_cf3k_e0_eval200.json`
+- Stage-2: `.worktrees/mquake/runs/mquake_cf3k_stage2_eval200.json`
+
+Scores are “match new answer (or aliases)”:
+- Single-hop (edited prompt): `0.975 → 0.985` (stable)
+- Multi-hop:
+  - `mh_q0`: `0.070 → 0.255` (trained index)
+  - `mh_q1`: `0.030 → 0.205` (held-out index)
+  - `mh_q2`: `0.045 → 0.180` (held-out index)
+
+Interpretation: **writing the edited fact does not propagate to multi-hop answers** (stage-1), but adding multi-hop triggers in stage-2 yields large gains even on held-out question variants—evidence that multi-hop failures are largely a *trigger distribution* mismatch (plus potentially reasoning brittleness), and that “pulling the trigger distribution” is necessary to cross this boundary.
+
+---
+
 ## 6) Rigor / threats-to-validity checklist (what reviewers will ask)
 
 ### 6.1 Prompt leakage (rephrase)
