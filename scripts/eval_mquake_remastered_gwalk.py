@@ -23,6 +23,11 @@ def _strip_answer(ans: str) -> str:
     return s.strip()
 
 
+def _first_line(ans: str) -> str:
+    s = str(ans or "").strip()
+    return s.splitlines()[0].strip() if s else ""
+
+
 def _norm_key(text: str) -> str:
     return _ws(text).lower()
 
@@ -205,6 +210,50 @@ def main() -> None:
     parser.add_argument("--tp_size", type=int, default=1)
     parser.add_argument("--cuda", type=str, default="")
     parser.add_argument("--max_tokens", type=int, default=8)
+    parser.add_argument(
+        "--stop_mode",
+        type=str,
+        default="strict",
+        choices=["strict", "paper"],
+        help=(
+            "strict: stop on newline/dot/eos (can inflate accuracy by preventing trailing punctuation). "
+            "paper: stop on newline/eos (closer to typical generation)."
+        ),
+    )
+    parser.add_argument(
+        "--report_raw",
+        action="store_true",
+        help="Also compute accuracy using unnormalized raw answers (uppercases only, no stripping).",
+    )
+    parser.add_argument(
+        "--hop_update",
+        type=str,
+        default="strip",
+        choices=["strip", "first_line_raw"],
+        help=(
+            "How to update the intermediate hop entity from model output. "
+            "strip: aggressive normalization (may inflate accuracy). "
+            "first_line_raw: only take first line, keep punctuation."
+        ),
+    )
+    parser.add_argument(
+        "--init_subject_mode",
+        type=str,
+        default="gold_path",
+        choices=["gold_path", "llm_question"],
+        help=(
+            "gold_path: initialize subject from gold triples_labeled (oracle). "
+            "llm_question: extract subject from the question text using the model."
+        ),
+    )
+    parser.add_argument(
+        "--use_all_questions",
+        action="store_true",
+        help=(
+            "Run one walk per question paraphrase and aggregate answers per case (matches cal_accuracy any-of-answers). "
+            "Useful with --init_subject_mode llm_question."
+        ),
+    )
     parser.add_argument("--max_records", type=int, default=0, help="0 = all")
     parser.add_argument("--use_memory", action="store_true", help="Override hop answer if (s, prompt) in edit bank.")
     parser.add_argument("--use_6334_split", action="store_true", help="Use MQuAKE-Remastered-CF-6334 split protocol.")
@@ -246,47 +295,86 @@ def main() -> None:
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(str(args.model_path), trust_remote_code=True)
-    stop = ["\n", ".", tok.eos_token] if tok.eos_token else ["\n", "."]
+    eos = [tok.eos_token] if tok.eos_token else []
+    if str(args.stop_mode) == "paper":
+        stop = ["\n"] + eos
+    else:
+        stop = ["\n", "."] + eos
 
-    # Precompute hop templates + initial subject per record; then walk hop-by-hop.
-    hop_rels: List[List[str]] = []
-    cur: List[str] = []
-    correct_obj_maps: List[Dict[Tuple[str, str], str]] = []
-    edited_flags: List[bool] = []
-    case_ids: List[int] = []
+    # Build per-question instances (optionally), then walk hop-by-hop.
+    inst_case_ids: List[int] = []
+    inst_edited: List[bool] = []
+    inst_questions: List[str] = []
+    inst_hop_rels: List[List[str]] = []
+    inst_correct_obj_maps: List[Dict[Tuple[str, str], str]] = []
+    inst_cur: List[str] = []
+    inst_cur_raw: List[str] = []
 
     for rec in eval_rows:
         cid = int(rec.get("case_id", -1))
-        case_ids.append(cid)
         edited = bool(edited_case_ids is not None and cid in edited_case_ids)
-        edited_flags.append(edited)
-
         triples_ids, triples_labeled = _correct_path(rec, edited=edited)
-        correct_obj_maps.append(_make_correct_obj_map(triples_ids))
-
         rels = _hop_templates(rec, edited=edited, labeled_path=triples_labeled)
-        hop_rels.append(rels)
+        correct_map = _make_correct_obj_map(triples_ids)
 
-        init = ""
-        if triples_labeled and isinstance(triples_labeled[0], list) and triples_labeled[0]:
-            init = _ws(triples_labeled[0][0])
-        if not init:
-            reqs = rec.get("requested_rewrite") or []
-            if reqs and isinstance(reqs, list) and isinstance(reqs[0], dict):
-                init = _ws(reqs[0].get("subject", ""))
-        cur.append(init)
+        qs = rec.get("questions") or []
+        if not isinstance(qs, list) or not qs:
+            qs = [""]
+        if not bool(args.use_all_questions):
+            qs = [qs[0]]
 
-    max_hops = max((len(r) for r in hop_rels), default=0)
+        for q in qs:
+            inst_case_ids.append(cid)
+            inst_edited.append(edited)
+            inst_questions.append(_ws(q))
+            inst_hop_rels.append(rels)
+            inst_correct_obj_maps.append(correct_map)
+            inst_cur.append("")  # filled below
+            inst_cur_raw.append("")
+
+            if str(args.init_subject_mode) == "gold_path":
+                init = ""
+                if triples_labeled and isinstance(triples_labeled[0], list) and triples_labeled[0]:
+                    init = _ws(triples_labeled[0][0])
+                if not init:
+                    reqs = rec.get("requested_rewrite") or []
+                    if reqs and isinstance(reqs, list) and isinstance(reqs[0], dict):
+                        init = _ws(reqs[0].get("subject", ""))
+                inst_cur[-1] = init
+                inst_cur_raw[-1] = init
+
+    if str(args.init_subject_mode) == "llm_question":
+        subj_prompts: List[str] = []
+        subj_meta: List[int] = []
+        for i, q in enumerate(inst_questions):
+            if inst_cur[i]:
+                continue
+            if not q:
+                continue
+            subj_prompts.append(
+                "Extract the starting subject entity from the question. "
+                "Return ONLY the entity string (no quotes, no punctuation).\n"
+                f"Question: {q}\n"
+                "Subject:"
+            )
+            subj_meta.append(i)
+        if subj_prompts:
+            subj_out = _vllm_generate(llm, subj_prompts, max_tokens=16, stop=["\n"] + eos)
+            for i, pred in zip(subj_meta, subj_out):
+                inst_cur_raw[i] = str(pred or "")
+                inst_cur[i] = _strip_answer(pred)
+
+    max_hops = max((len(r) for r in inst_hop_rels), default=0)
 
     for hop_idx in range(max_hops):
         prompts: List[str] = []
         meta: List[int] = []
 
-        for i, rec in enumerate(eval_rows):
-            rels = hop_rels[i]
+        for i in range(len(inst_case_ids)):
+            rels = inst_hop_rels[i]
             if hop_idx >= len(rels):
                 continue
-            subj = _ws(cur[i])
+            subj = _ws(inst_cur[i])
             rel_t = _ws(rels[hop_idx])
             if not (subj and rel_t and "{}" in rel_t):
                 continue
@@ -294,8 +382,9 @@ def main() -> None:
             if edit_bank:
                 key = (_norm_key(subj), _norm_key(rel_t))
                 fact = edit_bank.get(key)
-                if fact is not None and not _should_mask_override(fact, correct_obj_by_sr=correct_obj_maps[i]):
-                    cur[i] = fact.target
+                if fact is not None and not _should_mask_override(fact, correct_obj_by_sr=inst_correct_obj_maps[i]):
+                    inst_cur[i] = fact.target
+                    inst_cur_raw[i] = fact.target
                     continue
 
             prompts.append(_format_fill_prompt(subj, rel_t))
@@ -304,20 +393,34 @@ def main() -> None:
         if prompts:
             preds = _vllm_generate(llm, prompts, max_tokens=int(args.max_tokens), stop=stop)
             for i, pred in zip(meta, preds):
-                ans = _strip_answer(pred)
+                inst_cur_raw[i] = str(pred or "")
+                if str(args.hop_update) == "first_line_raw":
+                    ans = _first_line(pred)
+                else:
+                    ans = _strip_answer(pred)
                 if ans:
-                    cur[i] = ans
+                    inst_cur[i] = ans
 
-    raw_answer_dict: Dict[str, Dict[str, Any]] = {}
-    for cid, edited, pred in zip(case_ids, edited_flags, cur):
+    raw_answer_dict_norm: Dict[str, Dict[str, Any]] = {}
+    raw_answer_dict_raw: Dict[str, Dict[str, Any]] = {}
+    for cid, edited, pred, pred_raw in zip(inst_case_ids, inst_edited, inst_cur, inst_cur_raw):
         if cid < 0:
             continue
-        raw_answer_dict[str(cid)] = {"answers": [_strip_answer(pred)], "edited": bool(edited)}
+        entry = raw_answer_dict_norm.setdefault(str(cid), {"answers": [], "edited": bool(edited)})
+        entry["answers"].append(_strip_answer(pred))
+        if bool(args.report_raw):
+            entry2 = raw_answer_dict_raw.setdefault(str(cid), {"answers": [], "edited": bool(edited)})
+            entry2["answers"].append(_first_line(pred_raw))
 
     use_6334 = bool(args.use_6334_split) and any("6334_split" in (r or {}) for r in eval_rows)
-    metrics, correct, total = mquake_utils.cal_accuracy(
-        eval_rows, raw_answer_dict, int(args.edit_num), use_6334=use_6334
+    metrics_norm, correct_norm, total_norm = mquake_utils.cal_accuracy(
+        eval_rows, raw_answer_dict_norm, int(args.edit_num), use_6334=use_6334
     )
+    metrics_raw = None
+    if bool(args.report_raw):
+        metrics_raw, _correct_raw, _total_raw = mquake_utils.cal_accuracy(
+            eval_rows, raw_answer_dict_raw, int(args.edit_num), use_6334=use_6334
+        )
 
     report = {
         "data_path": args.data_path,
@@ -327,15 +430,26 @@ def main() -> None:
         "edit_num": int(args.edit_num),
         "max_records": int(args.max_records),
         "max_tokens": int(args.max_tokens),
-        "metrics": metrics,
+        "stop_mode": str(args.stop_mode),
+        "stop": stop,
+        "hop_update": str(args.hop_update),
+        "init_subject_mode": str(args.init_subject_mode),
+        "use_all_questions": bool(args.use_all_questions),
+        "metrics_norm": metrics_norm,
+        "metrics_raw": metrics_raw,
         "n_eval": len(eval_rows),
         "n_edit_bank": len(edit_bank),
+        "n_instances": len(inst_case_ids),
+        "n_edited_cases": len(edited_case_ids) if edited_case_ids is not None else None,
     }
     if args.output_path:
         Path(args.output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(args.output_path).write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-        raw_path = Path(args.output_path).with_suffix(".raw_answers.json")
-        raw_path.write_text(json.dumps(raw_answer_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+        raw_path = Path(args.output_path).with_suffix(".raw_answers.norm.json")
+        raw_path.write_text(json.dumps(raw_answer_dict_norm, ensure_ascii=False, indent=2), encoding="utf-8")
+        if bool(args.report_raw):
+            raw_path2 = Path(args.output_path).with_suffix(".raw_answers.raw.json")
+            raw_path2.write_text(json.dumps(raw_answer_dict_raw, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(json.dumps(report, ensure_ascii=False, indent=2)[:4000])
 
