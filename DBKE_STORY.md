@@ -220,6 +220,21 @@ Scores are “match new answer (or aliases)”:
 
 Interpretation: **writing the edited fact does not propagate to multi-hop answers** (stage-1), but adding multi-hop triggers in stage-2 yields large gains even on held-out question variants—evidence that multi-hop failures are largely a *trigger distribution* mismatch (plus potentially reasoning brittleness), and that “pulling the trigger distribution” is necessary to cross this boundary.
 
+### SOTA comparison (MQuAKE-Remastered-CF-3K, 3000-edit)
+The MQuAKE-Remastered paper re-benchmarks major methods on CF-3K. In their Table 18 (3000-edit column), the strongest method is **GWalk** (retrieval/masking-based), around **66–72%** depending on the 7B/8B model.
+
+Selected 3000-edit numbers from Table 18:
+- `Llama-3.1-8B-Instruct`: GWalk `71.53`, DeepEdit `9.47`, MeLLo `2.50`
+- `Qwen2.5-7B-Instruct`: GWalk `66.74`, DeepEdit `5.43`, MeLLo `23.10`
+
+Our current pure fine-tuning pipeline (Qwen3-1.7B, CF3k, **official-style strict alias match**, query q0/q1/q2 per case; case correct if **any** matches):
+- Stage-1 (E0 off-policy single-hop): `case_acc_any=0.084` (file: `.worktrees/mquake/runs/mquake_cf3k_e0_evalall_official.json`)
+- Stage-2 (add multi-hop on-policy q0): `case_acc_any=0.308` (file: `.worktrees/mquake/runs/mquake_cf3k_stage2_evalall_official.json`)
+
+Gap to SOTA (apples-to-oranges caveat: model size + method class differ):
+- vs GWalk@Qwen2.5-7B (`66.74%`): our stage-2 is ~`-35.9` points
+- vs DeepEdit@Qwen2.5-7B (`5.43%`): our stage-2 is ~`+25.4` points
+
 ---
 
 ## 6) Rigor / threats-to-validity checklist (what reviewers will ask)
